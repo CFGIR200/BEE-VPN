@@ -274,12 +274,12 @@ object Strings {
         "Disconnecting" to Triple("Disconnecting", "در حال قطع اتصال", "正在断开"),
         "Done" to Triple("Done", "تایید", "完成"),
         // Fork attribution (AGPL-3.0): shown as a muted line under the version
-        // label in Settings > ABOUT. The upstream name stays on purpose - the
-        // license requires crediting the original project.
-        "Licensed under GNU AGPL-3.0" to Triple(
-            "Licensed under GNU AGPL-3.0",
-            "منتشرشده تحت پروانهٔ GNU AGPL-3.0",
-            "Licensed under GNU AGPL-3.0",
+        // label in Settings > ABOUT. The reference project name stays on purpose
+        // - the license requires crediting the original project.
+        "Based on BEEHIVE-GUARD - AGPL-3.0" to Triple(
+            "Based on BEEHIVE-GUARD - AGPL-3.0",
+            "بر پایه BEEHIVE-GUARD - AGPL-3.0",
+            "Based on BEEHIVE-GUARD - AGPL-3.0",
         ),
         // BEE-VPN contact entries (Settings > ABOUT): the fork's own channels.
         "Telegram Channel" to Triple("Telegram Channel", "کانال تلگرام", "Telegram Channel"),

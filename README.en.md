@@ -27,7 +27,7 @@ BEE-VPN is built for people who need a full-device connection on networks where 
 
 The interface keeps the important state visible: session time, latency, traffic, speed, exit location, active method, and the health of a chained route. The details that make a route survive a particular network remain intentionally quiet; this page describes the system without publishing its sensitive operating recipe.
 
-> **License:** BEE-VPN is released under the **GNU AGPL-3.0** license; the full license text is available in [LICENSE](LICENSE).
+> **The BEE-VPN fork:** this project is based on **BEEHIVE-GUARD** (v3.2.0) by **CFG.IR** and is redistributed under the **GNU AGPL-3.0** license. All credit for the architecture and the core belongs to the BEEHIVE-GUARD project; this fork changes the branding, icon, color theme, and packaging.
 
 ## What is inside
 
@@ -132,6 +132,6 @@ BEE-VPN is released under [GNU AGPL-3.0](LICENSE). Bundled components are distri
 
 <div align="center">
 
-**BEE-VPN — released under the GNU AGPL-3.0 license**
+**BEE-VPN is a fork of BEEHIVE-GUARD by CFG.IR — developed further under AGPL-3.0**
 
 </div>

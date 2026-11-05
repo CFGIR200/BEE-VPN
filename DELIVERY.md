@@ -1,6 +1,6 @@
 # سند تحویل پروژه BEE-VPN
 
-این سند برای تیمی نوشته شده که می‌خواهد **BEE-VPN** را منتشر و نگهداری کند. کل سورس، ریبرند کامل‌شدهٔ نسخهٔ `3.2.0` پروژهٔ بالادست است و آمادهٔ push به گیت‌هاب و بیلد خودکار.
+این سند برای تیمی نوشته شده که می‌خواهد **BEE-VPN** را منتشر و نگهداری کند. کل سورس، ریبرند کامل‌شدهٔ نسخهٔ `3.2.0` پروژهٔ **BEEHIVE-GUARD** (اثر CFG.IR) است و آمادهٔ push به گیت‌هاب و بیلد خودکار.
 
 ---
 
@@ -14,9 +14,9 @@
 | آیکون‌ها | لوگوی زنبور تولیدشده با AI — mipmap همهٔ تراکم‌ها (mdpi تا xxxhdpi)، لایه‌های adaptive (`beevpn_icon_fg/bg`)، splash، گلیف مونوکروم اندروید ۱۳+ و آیکون نوتیفیکیشن (وکتور زنبور) |
 | زبان‌ها | فارسی + انگلیسی (منابع چینی و روسی حذف شد) |
 | صفحهٔ حمایت مالی نویسندهٔ اصلی | به‌طور کامل حذف شد (UI + آدرس‌های کریپتو + ردیف تلگرام) |
-| صفحهٔ درباره | بخش ABOUT تنظیمات با نام BEE-VPN، نسخه و خط «منتشرشده تحت پروانهٔ AGPL-3.0» |
+| صفحهٔ درباره | بخش ABOUT تنظیمات با نام BEE-VPN، نسخه و خط انتساب «بر پایهٔ BEEHIVE-GUARD — AGPL-3.0» |
 | CI/CD | ورک‌فلو `.github/workflows/build.yml` با هر push روی `master` برای سه ABI (arm64-v8a، armeabi-v7a، x86_64) + Universal، APK امضاشده می‌سازد |
-| لایسنس | AGPL-3.0 حفظ شده + انتساب پروژهٔ بالادست در README و داخل اپ |
+| لایسنس | AGPL-3.0 حفظ شده + انتساب BEEHIVE-GUARD (اثر CFG.IR) در README و داخل اپ |
 
 ## ۲. چیزهایی که باید خودتان جایگزین کنید (Placeholder ها)
 
@@ -46,7 +46,7 @@ git commit -am "Set final repo owner"
 ```bash
 git init
 git add -A
-git commit -m "BEE-VPN 1.0.0 (AGPL-3.0)"
+git commit -m "BEE-VPN 1.0.0 - fork of BEEHIVE-GUARD 3.2.0 (AGPL-3.0)"
 git branch -M master
 git remote add origin https://github.com/YOUR-USER/BEE-VPN.git
 git push -u origin master
@@ -104,7 +104,7 @@ keytool -genkeypair -v -keystore release.keystore -alias beevpn \
 ## ۷. تعهدات مجوز (AGPL-3.0)
 
 - فایل `LICENSE` را حذف یا تغییر ندهید.
-- فقط مجوز AGPL-3.0 (فایل LICENSE) به‌عنوان تعهد حقوقی باقی می‌ماند؛ هیچ اشارهٔ برند دیگری وجود ندارد.
+- خط انتساب «بر پایهٔ BEEHIVE-GUARD» (اثر CFG.IR) در README (فارسی/انگلیسی) و در صفحهٔ ABOUT اپ باقی بماند.
 - اگر نسخهٔ تغییر یافته را توزیع کردید، سورس کامل همان نسخه باید در دسترس باشد (بخش Releases + ریپازیتوری عمومی این شرط را برآورده می‌کند).
 - اجزای وندورشده (quiche، BadVPN، lwIP، Psiphon، Tor، lyrebird) مجوز مستقل خودشان را دارند.
 
@@ -147,7 +147,7 @@ keytool -genkeypair -v -keystore release.keystore -alias beevpn \
 ## ۱۰. انتشار فایل‌های دانلود روی گیت‌هاب (Releases)
 
 فایل‌های دانلود APK از طریق **GitHub Releases** منتشر می‌شوند — همان روش پروژهٔ بالادست
-(پروژهٔ بالادست در تگ v3.2.0 چهار APK + `SHA256SUMS.txt` را به‌صورت Release asset منتشر می‌کند).
+(BEEHIVE-GUARD اثر CFG.IR در تگ v3.2.0 چهار APK + `SHA256SUMS.txt` را به‌صورت Release asset منتشر می‌کند).
 داخل خود ریپازیتوری نمی‌توان فایل بالای ۱۰۰ مگابایت را commit کرد؛ asset های Release تا ۲ گیگابایت پشتیبانی می‌شوند.
 
 ابزارهای اضافه‌شده به سورس:

@@ -3974,7 +3974,7 @@ class MainActivity : Activity() {
                 setPadding(0, dp(22), 0, 0)
             })
             // AGPL-3.0 attribution: the fork must credit the upstream project.
-            body.addView(label(Strings.t("Licensed under GNU AGPL-3.0"), 10.5f, Sculpt.withAlpha(MUTED, 0.55f)).apply {
+            body.addView(label(Strings.t("Based on BEEHIVE-GUARD - AGPL-3.0"), 10.5f, Sculpt.withAlpha(MUTED, 0.55f)).apply {
                 gravity = Gravity.CENTER_HORIZONTAL
                 letterSpacing = spacing(0.04f)
                 setPadding(0, dp(4), 0, 0)
