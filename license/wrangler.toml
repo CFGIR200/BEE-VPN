@@ -12,8 +12,9 @@ compatibility_date = "2025-06-01"
 
 [vars]
 # Public by design: it ships inside the APK and is served by GET /pubkey.
-# Replace with the value printed by `node keygen.mjs`.
-LICENSE_ED25519_PUB_B64 = "REPLACE_WITH_PUBKEY_FROM_KEYGEN"
+# This IS the operator's real key — the matching private half lives only in
+# the operator's offline copy + the LICENSE_ED25519_PRIV_B64 Worker secret.
+LICENSE_ED25519_PUB_B64 = "S-H-4JCuQ3c_Asf4JDJTHoWLePvEQV14Bxcy7N2WORU"
 
 [[d1_databases]]
 binding = "DB"
