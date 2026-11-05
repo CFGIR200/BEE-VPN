@@ -148,6 +148,174 @@ async function savePrices(env, obj) {
   ).bind(PRICES_KEY, JSON.stringify(obj), nowSec()).run();
 }
 
+// ---------------------------------------------------------------------------
+// Button-driven /price panel (admin only)
+// ---------------------------------------------------------------------------
+
+const FA_DIGITS = '۰۱۲۳۴۵۶۷۸۹';
+
+/** 250000 -> «۲۵۰٬۰۰۰» (thousands separator first, then Persian digits). */
+function faNum(n) {
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, '٬').replace(/\d/g, (d) => FA_DIGITS[+d]);
+}
+
+const PRICE_PRESETS = [
+  ['۵۰ هزار', 50000], ['۱۰۰ هزار', 100000], ['۱۵۰ هزار', 150000], ['۲۰۰ هزار', 200000],
+  ['۲۵۰ هزار', 250000], ['۳۰۰ هزار', 300000], ['۴۰۰ هزار', 400000], ['۵۰۰ هزار', 500000],
+  ['۷۵۰ هزار', 750000], ['۱ میلیون', 1000000],
+];
+
+// One pending admin interaction at a time (currently: typing a new price).
+// Lives in the settings table (key = edit:<tg-id>) — no extra migration.
+async function getAdminState(env, uid) {
+  try {
+    const row = await env.DB.prepare('SELECT value, updated_at FROM settings WHERE key = ?')
+      .bind(`edit:${uid}`).first();
+    if (!row || nowSec() - row.updated_at > 7200) return null; // stale after 2h
+    return JSON.parse(row.value);
+  } catch (_) { return null; }
+}
+
+async function setAdminState(env, uid, obj) {
+  await env.DB.prepare(
+    'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ' +
+    'ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
+  ).bind(`edit:${uid}`, JSON.stringify(obj), nowSec()).run();
+}
+
+async function clearAdminState(env, uid) {
+  try {
+    await env.DB.prepare('DELETE FROM settings WHERE key = ?').bind(`edit:${uid}`).run();
+  } catch (_) { /* fine */ }
+}
+
+async function priceMenuText(env) {
+  const cur = await getPrices(env);
+  const lines = ['💰 <b>قیمت‌های فعلی فروشگاه</b>', ''];
+  for (const [plan, info] of Object.entries(cur)) {
+    lines.push(`🔹 <b>${esc(plan)}</b> — ${esc(info.title)}: <b>${esc(info.price)}</b>`);
+  }
+  lines.push('', 'برای تغییر، دکمهٔ پلن را بزن 👇');
+  return lines.join('\n');
+}
+
+function priceMenuKb(cur) {
+  const rows = Object.entries(cur).map(([plan, info]) => ([
+    { text: `✏️ ${plan} — ${info.price}`, callback_data: `price:${plan}` },
+  ]));
+  rows.push([{ text: '↩️ ریست به پیش‌فرض', callback_data: 'reset_ask' }]);
+  return { inline_keyboard: rows };
+}
+
+function priceEditKb(plan) {
+  const rows = [];
+  for (let i = 0; i < PRICE_PRESETS.length; i += 5) {
+    rows.push(PRICE_PRESETS.slice(i, i + 5).map(([label, n]) => ({
+      text: label, callback_data: `pset:${plan}:${n}`,
+    })));
+  }
+  rows.push([{ text: '🔙 فهرست قیمت‌ها', callback_data: 'price_menu' }]);
+  return { inline_keyboard: rows };
+}
+
+/** Shared: apply «عنوان | قیمت» or a bare price to one plan. Returns true on success. */
+async function applyPriceInput(env, chatId, plan, text) {
+  const cur = await getPrices(env);
+  const fallback = prices(env);
+  let title = (cur[plan] && cur[plan].title) || (fallback[plan] && fallback[plan].title) || plan;
+  let priceTxt = (cur[plan] && cur[plan].price) || '?';
+  const raw = text.trim().split('|').map((s) => s.trim());
+  if (raw.length > 1) {
+    if (!raw[1]) {
+      await send(env, chatId, 'قیمت بعد از | خالی است — مثال: <code>عنوان | ۲۵۰٬۰۰۰ تومان</code>');
+      return false;
+    }
+    if (raw[0]) title = raw[0].slice(0, 60);
+    priceTxt = raw[1].slice(0, 80);
+  } else {
+    priceTxt = raw[0].slice(0, 80);
+  }
+  try {
+    await savePrices(env, { ...cur, [plan]: { title, price: priceTxt } });
+  } catch (e) {
+    await send(env, chatId, `⚠️ ذخیرهٔ قیمت ناموفق بود: ${esc(String(e.message || e))}`);
+    return false;
+  }
+  await send(env, chatId, [
+    '✅ <b>قیمت ثبت شد</b> — از این لحظه در «🛍 خرید اشتراک» همین شکل دیده می‌شود:',
+    `🛍 <b>${esc(title)}</b> — ${esc(priceTxt)}`,
+  ].join('\n'), { inline_keyboard: [[{ text: '🔙 فهرست قیمت‌ها', callback_data: 'price_menu' }]] });
+  return true;
+}
+
+/** Callbacks of the /price panel (admin only). */
+async function handlePriceCb(env, cb, data) {
+  const chatId = cb.message.chat.id;
+  const messageId = cb.message.message_id;
+  const adminId = cb.from.id;
+  const edit = (text, kb) => tg(env, 'editMessageText', {
+    chat_id: chatId, message_id: messageId, text, parse_mode: 'HTML', reply_markup: kb,
+  }).catch(() => {});
+
+  if (data === 'price_menu') {
+    await clearAdminState(env, adminId);
+    await edit(await priceMenuText(env), priceMenuKb(await getPrices(env)));
+    return answerCb(env, cb.id);
+  }
+  if (data === 'reset_ask') {
+    await edit('↩️ همهٔ قیمت‌ها به پیش‌فرض برمی‌گردند. مطمئنی؟', {
+      inline_keyboard: [[
+        { text: '✅ بله، ریست کن', callback_data: 'reset_go' },
+        { text: '❌ لغو', callback_data: 'price_menu' },
+      ]],
+    });
+    return answerCb(env, cb.id);
+  }
+  if (data === 'reset_go') {
+    try {
+      await env.DB.prepare('DELETE FROM settings WHERE key = ?').bind(PRICES_KEY).run();
+    } catch (_) { /* already default */ }
+    await clearAdminState(env, adminId);
+    await edit('↩️ قیمت‌های پیش‌فرض بازیابی شد.', {
+      inline_keyboard: [[{ text: '🔙 فهرست قیمت‌ها', callback_data: 'price_menu' }]],
+    });
+    return answerCb(env, cb.id, 'ریست شد');
+  }
+  const parts = data.split(':');
+  const plan = parts[1] || '';
+  if (!planDays(plan)) return answerCb(env, cb.id, 'پلن نامعتبر');
+  if (parts[0] === 'price') {
+    // Entering edit mode: the admin's next plain message becomes the price.
+    await setAdminState(env, adminId, { mode: 'price', plan });
+    const cur = await getPrices(env);
+    const info = cur[plan] || { title: plan, price: '?' };
+    await edit([
+      `✏️ <b>ویرایش ${esc(plan)}</b>`,
+      `عنوان: ${esc(info.title)}`,
+      `قیمت فعلی: <b>${esc(info.price)}</b>`,
+      '',
+      'یک قیمت آماده انتخاب کن 👇',
+      'یا قیمت دلخواه را تایپ کن و بفرست.',
+      'با عنوان جدید: <code>عنوان | قیمت</code> — لغو: <code>/cancel</code>',
+    ].join('\n'), priceEditKb(plan));
+    return answerCb(env, cb.id);
+  }
+  // pset:<plan>:<amount> — one-tap preset.
+  const n = parseInt(parts[2] || '0', 10);
+  if (!n) return answerCb(env, cb.id, 'قیمت نامعتبر');
+  const cur = await getPrices(env);
+  const title = (cur[plan] && cur[plan].title) || plan;
+  await savePrices(env, { ...cur, [plan]: { title, price: `${faNum(n)} تومان` } });
+  await clearAdminState(env, adminId);
+  await edit(`✅ <b>${esc(plan)}</b> → <b>${faNum(n)} تومان</b> ثبت شد.`, {
+    inline_keyboard: [[
+      { text: '🔙 فهرست قیمت‌ها', callback_data: 'price_menu' },
+      { text: '✏️ ویرایش دوباره', callback_data: `price:${plan}` },
+    ]],
+  });
+  return answerCb(env, cb.id, 'ثبت شد');
+}
+
 async function planKeyboard(env) {
   const list = await getPrices(env);
   const rows = Object.entries(list).map(([plan, info]) => ([{
@@ -423,54 +591,24 @@ async function cmdBuyers(env, chatId, args) {
   return send(env, chatId, lines.join('\n'));
 }
 
-/** /price — view or change the shop prices at runtime (stored in D1). */
+/** /price — button panel; text form (…/price m1 …) kept for quick use. */
 async function cmdPrice(env, chatId, args) {
-  const cur = await getPrices(env);
-  if (!args.length || args[0].toLowerCase() === 'list') {
-    const lines = ['💰 <b>قیمت‌های فعلی فروشگاه:</b>'];
-    for (const [plan, info] of Object.entries(cur)) {
-      lines.push(`🔹 <b>${esc(plan)}</b> — ${esc(info.title)}: <b>${esc(info.price)}</b>`);
+  if (args.length) {
+    if (args[0].toLowerCase() === 'reset') {
+      try {
+        await env.DB.prepare('DELETE FROM settings WHERE key = ?').bind(PRICES_KEY).run();
+      } catch (_) { /* table missing = already default */ }
+      return send(env, chatId, '↩️ قیمت‌های پیش‌فرض بازیابی شد.');
     }
-    lines.push(
-      '',
-      '✏️ عنوان + قیمت: <code>/price m1 اشتراک یک‌ماهه | ۲۵۰٬۰۰۰ تومان</code>',
-      '✏️ فقط قیمت: <code>/price m1 ۲۵۰٬۰۰۰ تومان</code>',
-      '↩️ بازگشت به پیش‌فرض: <code>/price reset</code>',
-    );
-    return send(env, chatId, lines.join('\n'));
+    const plan = (args[0] || '').toLowerCase();
+    if (!planDays(plan)) {
+      return send(env, chatId, 'فرمت: <code>/price m1 عنوان | قیمت</code>\nپلن‌ها: <code>m1 m3 m6 m12</code>');
+    }
+    const rest = args.slice(1).join(' ').trim();
+    if (!rest) return send(env, chatId, 'فرمت: <code>/price m1 عنوان | قیمت</code> یا <code>/price m1 قیمت</code>');
+    return applyPriceInput(env, chatId, plan, rest);
   }
-  if (args[0].toLowerCase() === 'reset') {
-    try {
-      await env.DB.prepare('DELETE FROM settings WHERE key = ?').bind(PRICES_KEY).run();
-    } catch (_) { /* table missing = already default */ }
-    return send(env, chatId, '↩️ قیمت‌های پیش‌فرض بازیابی شد.');
-  }
-  const plan = (args[0] || '').toLowerCase();
-  if (!planDays(plan)) {
-    return send(env, chatId, 'فرمت: <code>/price m1 عنوان | قیمت</code>\nپلن‌ها: <code>m1 m3 m6 m12</code>');
-  }
-  const rest = args.slice(1).join(' ').trim();
-  if (!rest) return send(env, chatId, 'فرمت: <code>/price m1 عنوان | قیمت</code> یا <code>/price m1 قیمت</code>');
-  const raw = rest.split('|').map((s) => s.trim());
-  const fallback = prices(env);
-  let title = (cur[plan] && cur[plan].title) || (fallback[plan] && fallback[plan].title) || plan;
-  let priceTxt = (cur[plan] && cur[plan].price) || '?';
-  if (raw.length > 1) {
-    if (!raw[1]) return send(env, chatId, 'قیمت بعد از | خالی است — مثال: <code>/price m1 عنوان | ۲۵۰٬۰۰۰ تومان</code>');
-    if (raw[0]) title = raw[0].slice(0, 60);
-    priceTxt = raw[1].slice(0, 80);
-  } else {
-    priceTxt = raw[0].slice(0, 80);
-  }
-  try {
-    await savePrices(env, { ...cur, [plan]: { title, price: priceTxt } });
-  } catch (e) {
-    return send(env, chatId, `⚠️ ذخیرهٔ قیمت ناموفق بود: ${esc(String(e.message || e))}`);
-  }
-  return send(env, chatId, [
-    '✅ <b>قیمت ثبت شد</b> — از این لحظه در «🛍 خرید اشتراک» همین شکل دیده می‌شود:',
-    `🛍 <b>${esc(title)}</b> — ${esc(priceTxt)}`,
-  ].join('\n'));
+  return send(env, chatId, await priceMenuText(env), priceMenuKb(await getPrices(env)));
 }
 
 async function cmdList(env, chatId, args) {
@@ -691,6 +829,13 @@ export default {
             inline_keyboard: [[{ text: '🔙 بازگشت', callback_data: 'buy' }]],
           });
           await notifyAdmins(env, `🛒 خریدار ${buyerLine(cb.from)} پلن <b>${esc(plan)}</b> را انتخاب کرد.\nاسکرین‌شاتش که رسید را با دکمهٔ ✅ تأیید کن — کد خودکار برایش ارسال می‌شود.`);
+        } else if (data.startsWith('price:') || data.startsWith('pset:') ||
+                   data === 'price_menu' || data === 'reset_ask' || data === 'reset_go') {
+          if (!isAdmin(env, cb.from)) {
+            await answerCb(env, cb.id, 'فقط ادمین');
+          } else {
+            await handlePriceCb(env, cb, data);
+          }
         } else if (data.startsWith('ok:') || data.startsWith('no:')) {
           if (!isAdmin(env, cb.from)) {
             await answerCb(env, cb.id, 'فقط ادمین');
@@ -740,6 +885,15 @@ export default {
       }
 
       if (isAdmin(env, msg.from)) {
+        // A pending /price edit: the admin's next plain message IS the new price.
+        if (!text.startsWith('/')) {
+          const st = await getAdminState(env, msg.from.id);
+          if (st && st.mode === 'price' && planDays(st.plan)) {
+            const applied = await applyPriceInput(env, chatId, st.plan, text);
+            if (applied) await clearAdminState(env, msg.from.id);
+            return new Response('ok');
+          }
+        }
         const parts = text.split(/\s+/);
         const cmd = (parts[0] || '').toLowerCase();
         const args = parts.slice(1);
@@ -754,6 +908,10 @@ export default {
         else if (cmd === '/extend') await cmdExtend(env, chatId, args);
         else if (cmd === '/reset') await cmdReset(env, chatId, args);
         else if (cmd === '/stats') await cmdStats(env, chatId);
+        else if (cmd === '/cancel') {
+          await clearAdminState(env, msg.from.id);
+          await send(env, chatId, '↩️ لغو شد.');
+        }
         else if (cmd === '/helpadmin') {
           await send(env, chatId, [
             '🛠 <b>فرمان‌های ادمین:</b>',
@@ -766,7 +924,7 @@ export default {
             '<code>/stats</code> — آمار کل + فروش ۷/۳۰ روز + سهم پلن‌ها',
             '<code>/buyers</code> — لیست خریداران با تعداد خرید',
             '<code>/who 123456789</code> — تاریخچهٔ کامل یک خریدار',
-            '<code>/price</code> — دیدن قیمت‌ها • <code>/price m1 عنوان | قیمت</code> — تغییر بدون دیپلوی',
+            '<code>/price</code> — پنل دکمه‌ای قیمت‌ها: پلن را بزن، قیمت آماده انتخاب کن یا قیمت دلخواه تایپ کن',
           ].join('\n'));
         }
         return new Response('ok');
