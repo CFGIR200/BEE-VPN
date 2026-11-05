@@ -43,6 +43,14 @@ CREATE TABLE IF NOT EXISTS attempts (
 );
 CREATE INDEX IF NOT EXISTS idx_attempts_ip_ts ON attempts (ip, ts);
 
+-- Runtime settings written by admin commands (e.g. /price in bot-worker.js).
+-- One row per setting; the bot reads it before falling back to env/defaults.
+CREATE TABLE IF NOT EXISTS settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,             -- JSON blob (e.g. the prices catalogue)
+  updated_at INTEGER NOT NULL
+);
+
 -- The buyer's latest plan choice: their next photo (no command needed)
 -- becomes the payment receipt for that plan. One row per buyer; cleared on
 -- approval (see bot-worker.js "Purchase-by-receipt flow").
