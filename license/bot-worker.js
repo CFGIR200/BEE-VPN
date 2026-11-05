@@ -7,7 +7,8 @@
  *     buyer sends the receipt, the admin issues a code with /gen and pastes
  *     it into the chat. No payment gateway needed on day one.
  *   - trial: hands out exactly one 1-day code per Telegram account.
- *   - admin: /gen /adduser /list /who /revoke /unrevoke /extend /reset /stats
+ *   - admin: /gen /adduser /list /who /revoke /unrevoke /extend /reset
+ *            /stats /buyers
  *
  * Webhook setup (once, after deploy):
  *   curl "https://api.telegram.org/bot$BOT_TOKEN/setWebhook" \
@@ -248,7 +249,10 @@ async function lookup(env, key) {
 }
 
 async function cmdWho(env, chatId, args) {
-  if (!args[0]) return send(env, chatId, 'فرمت: <code>/who BEE-XXXX-XXXX-XXXX|username</code>');
+  if (!args[0]) return send(env, chatId, 'فرمت: <code>/who BEE-XXXX-XXXX-XXXX|username|تلگرام-id</code>');
+  // A bare number is a Telegram user id: show that buyer's whole purchase
+  // history instead of a single row.
+  if (/^\d{3,}$/.test(args[0].trim())) return whoBuyer(env, chatId, parseInt(args[0].trim(), 10));
   const found = await lookup(env, args[0]);
   if (!found) return send(env, chatId, '❌ پیدا نشد.');
   const r = found.row;
@@ -260,6 +264,37 @@ async function cmdWho(env, chatId, args) {
     `دستگاه: ${r.bound_install_id ? `<code>${esc(r.bound_install_id.slice(0, 12))}…</code>` : '—'}`,
     r.telegram_user_id ? `تلگرام: <a href="tg://user?id=${r.telegram_user_id}">${r.telegram_user_id}</a>` : '',
   ].filter(Boolean).join('\n'));
+}
+
+/** /who <tg-id>: every code and account one Telegram buyer owns. */
+async function whoBuyer(env, chatId, uid) {
+  const lic = await env.DB.prepare(
+    'SELECT code, plan, status, activated_at, expires_at, created_at FROM licenses WHERE telegram_user_id = ? ORDER BY created_at DESC',
+  ).bind(uid).all();
+  const acc = await env.DB.prepare(
+    'SELECT username, plan, status, activated_at, expires_at FROM accounts WHERE telegram_user_id = ? ORDER BY created_at DESC',
+  ).bind(uid).all();
+  const now = nowSec();
+  const lines = [`👤 <b>خریدار</b> <a href="tg://user?id=${uid}">${uid}</a>`];
+  const rows = lic.results || [];
+  if (!rows.length && !(acc.results || []).length) {
+    return send(env, chatId, '❌ برای این شناسهٔ تلگرام چیزی ثبت نشده.');
+  }
+  for (const r of rows) {
+    const when = new Date(r.created_at * 1000).toISOString().slice(0, 10);
+    const live = r.expires_at ? (r.expires_at > now ? '🟢' : '🔴') : '⏳';
+    lines.push(`${live} <code>${esc(r.code)}</code> ${esc(r.plan)} ${r.status === 'active' ? '' : '⛔'} — ${when}`);
+  }
+  for (const r of acc.results || []) {
+    const live = r.expires_at ? (r.expires_at > now ? '🟢' : '🔴') : '⏳';
+    lines.push(`${live} 👤 <code>${esc(r.username)}</code> ${esc(r.plan)} ${r.status === 'active' ? '' : '⛔'}`);
+  }
+  lines.push('', `مجموع: ${rows.length} کد — ${liveCount(rows, now)} در جریان`);
+  return send(env, chatId, lines.join('\n'));
+}
+
+function liveCount(rows, now) {
+  return rows.filter((r) => r.expires_at && r.expires_at > now).length;
 }
 
 async function setStatus(env, chatId, args, status) {
@@ -312,12 +347,57 @@ async function cmdStats(env, chatId) {
   const liveLic = await env.DB.prepare('SELECT COUNT(*) AS n FROM licenses WHERE expires_at > ?').bind(now).first();
   const liveAcc = await env.DB.prepare('SELECT COUNT(*) AS n FROM accounts WHERE expires_at > ?').bind(now).first();
   const liveN = (liveLic ? liveLic.n : 0) + (liveAcc ? liveAcc.n : 0);
+  // The «who is buying» picture: distinct buyers, recent sales, plan mix.
+  const buyers = await env.DB.prepare(
+    'SELECT COUNT(DISTINCT telegram_user_id) AS n FROM licenses WHERE telegram_user_id IS NOT NULL',
+  ).first();
+  const d7 = await env.DB.prepare('SELECT COUNT(*) AS n FROM licenses WHERE created_at > ?').bind(now - 7 * 86400).first();
+  const d30 = await env.DB.prepare('SELECT COUNT(*) AS n FROM licenses WHERE created_at > ?').bind(now - 30 * 86400).first();
+  const mix = await env.DB.prepare('SELECT plan, COUNT(*) AS n FROM licenses GROUP BY plan ORDER BY n DESC').all();
+  const mixLine = (mix.results || []).map((r) => `${esc(r.plan)}×${r.n}`).join(' — ');
   await send(env, chatId, [
     '📊 <b>آمار کندو</b>',
     `کدها: ${lic.total || 0} کل — ${lic.active || 0} فعال — ${lic.unused || 0} بلااستفاده`,
     `حساب‌ها: ${acc.total || 0} کل — ${acc.active || 0} فعال`,
     `اشتراک‌های در جریان: <b>${liveN}</b>`,
+    '',
+    `🧑‍🤝‍🧑 خریداران: <b>${buyers ? buyers.n : 0}</b> نفر`,
+    `🛒 فروش ۷ روز: <b>${d7 ? d7.n : 0}</b> — ۳۰ روز: <b>${d30 ? d30.n : 0}</b>`,
+    `🏷 پلن‌ها: ${mixLine || '—'}`,
+    '',
+    '👥 لیست خریداران: <code>/buyers</code>',
   ].join('\n'));
+}
+
+/** /buyers — per-buyer rollup: who bought, how many codes, what is still live. */
+async function cmdBuyers(env, chatId, args) {
+  const limit = Math.min(Math.max(parseInt(args[0] || '15', 10) || 15, 1), 30);
+  const rows = await env.DB.prepare(
+    `SELECT telegram_user_id AS uid, COUNT(*) AS n,
+            SUM(CASE WHEN expires_at > ? THEN 1 ELSE 0 END) AS live,
+            SUM(CASE WHEN status = 'revoked' THEN 1 ELSE 0 END) AS banned,
+            MAX(created_at) AS last
+     FROM licenses WHERE telegram_user_id IS NOT NULL
+     GROUP BY telegram_user_id ORDER BY n DESC, last DESC LIMIT ?`,
+  ).bind(nowSec(), limit).all();
+  const total = await env.DB.prepare(
+    'SELECT COUNT(DISTINCT telegram_user_id) AS n FROM licenses WHERE telegram_user_id IS NOT NULL',
+  ).first();
+  const list = rows.results || [];
+  if (!list.length) {
+    return send(env, chatId, 'هنوز خریدی از طریق ربات ثبت نشده — بعد از اولین تأییدِ رسید، خریداران این‌جا لیست می‌شوند.');
+  }
+  const now = nowSec();
+  const lines = [`👥 <b>خریداران — ${total ? total.n : 0} نفر</b> (${list.length} نفرِ برتر):`];
+  for (const r of list) {
+    const when = new Date(r.last * 1000).toISOString().slice(0, 10);
+    lines.push(
+      `<a href="tg://user?id=${r.uid}">${r.uid}</a> — ${r.n} خرید • ${r.live} در جریان` +
+      (r.banned ? ` • ⛔ ${r.banned} لغو` : '') + ` • آخرین: ${when}`,
+    );
+  }
+  lines.push('', '🔎 تاریخچهٔ یک نفر: <code>/who 123456789</code>');
+  return send(env, chatId, lines.join('\n'));
 }
 
 async function cmdList(env, chatId, args) {
@@ -594,6 +674,7 @@ export default {
         else if (cmd === '/adduser') await cmdAddUser(env, chatId, args);
         else if (cmd === '/list') await cmdList(env, chatId, args);
         else if (cmd === '/who') await cmdWho(env, chatId, args);
+        else if (cmd === '/buyers') await cmdBuyers(env, chatId, args);
         else if (cmd === '/revoke') await setStatus(env, chatId, args, 'revoked');
         else if (cmd === '/unrevoke') await setStatus(env, chatId, args, 'active');
         else if (cmd === '/extend') await cmdExtend(env, chatId, args);
@@ -608,7 +689,9 @@ export default {
             '<code>/list 10</code> • <code>/who BEE-…</code>',
             '<code>/revoke …</code> • <code>/unrevoke …</code>',
             '<code>/extend … 30</code> • <code>/reset …</code>',
-            '<code>/stats</code>',
+            '<code>/stats</code> — آمار کل + فروش ۷/۳۰ روز + سهم پلن‌ها',
+            '<code>/buyers</code> — لیست خریداران با تعداد خرید',
+            '<code>/who 123456789</code> — تاریخچهٔ کامل یک خریدار',
           ].join('\n'));
         }
         return new Response('ok');
