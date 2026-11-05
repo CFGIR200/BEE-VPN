@@ -836,6 +836,20 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         uiForeground = true
+        // Subscription gate: an expired or revoked device cannot sit on the
+        // console. The gate re-checks locally (signature + expiry), so the
+        // bounce is instant and works with no network. revalidateAsync is a
+        // no-op unless ~12 h have passed; it is what carries revocation in.
+        if (LicenseManager.blocked(this)) {
+            startActivity(
+                Intent(this, LicenseGateActivity::class.java)
+                    .putExtra(LicenseGateActivity.EXTRA_REASON, "expired"),
+            )
+            // Finish so Back from the gate closes the app instead of landing on
+            // a console that would only bounce straight back to the gate.
+            finish()
+        }
+        LicenseManager.revalidateAsync(this)
         // Restart everything the pause stopped. Each of these is idempotent and
         // cheap; the point is that the screen is correct the instant it appears
         // rather than after one poll interval.

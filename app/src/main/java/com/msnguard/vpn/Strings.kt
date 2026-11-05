@@ -11,6 +11,28 @@ object Strings {
 
 
     private val table = mapOf(
+        // ---- Subscription gate (LicenseGateActivity / LicenseManager) ----
+        "The hive is locked" to Triple("The hive is locked", "کندو قفله", "The hive is locked"),
+        "Activate your subscription to use BEE-VPN" to Triple("Activate your subscription to use BEE-VPN", "برای استفاده از BEE-VPN اشتراک را فعال کن", "Activate your subscription to use BEE-VPN"),
+        "Activation code" to Triple("Activation code", "کد فعال‌سازی", "Activation code"),
+        "Account" to Triple("Account", "حساب کاربری", "Account"),
+        "Activate" to Triple("Activate", "فعال‌سازی", "Activate"),
+        "Sign in to BEE-VPN" to Triple("Sign in to BEE-VPN", "ورود به BEE-VPN", "Sign in to BEE-VPN"),
+        "Username" to Triple("Username", "نام کاربری", "Username"),
+        "🛍 Buy subscription" to Triple("🛍 Buy subscription", "🛍 خرید اشتراک", "🛍 Buy subscription"),
+        "🎁 1-day free trial" to Triple("🎁 1-day free trial", "🎁 تست رایگان ۱ روزه", "🎁 1-day free trial"),
+        "🆘 Support" to Triple("🆘 Support", "🆘 پشتیبانی", "🆘 Support"),
+        "No browser found" to Triple("No browser found", "مرورگری پیدا نشد", "No browser found"),
+        "Subscription activated ✓" to Triple("Subscription activated ✓", "اشتراک فعال شد ✓", "Subscription activated ✓"),
+        "Invalid activation code" to Triple("Invalid activation code", "کد فعال‌سازی نامعتبر است", "Invalid activation code"),
+        "This code is bound to another device" to Triple("This code is bound to another device", "این کد روی دستگاه دیگری فعال شده است", "This code is bound to another device"),
+        "Subscription expired — renew to continue" to Triple("Subscription expired — renew to continue", "اشتراک به پایان رسیده — برای ادامه تمدید کن", "Subscription expired — renew to continue"),
+        "Wrong username or password" to Triple("Wrong username or password", "نام کاربری یا رمز اشتباه است", "Wrong username or password"),
+        "License server unreachable — try again" to Triple("License server unreachable — try again", "سرور لایسنس در دسترس نیست — دوباره تلاش کن", "License server unreachable — try again"),
+        "Too many attempts — try again later" to Triple("Too many attempts — try again later", "تلاش‌های زیادی انجام شده — بعداً دوباره تلاش کن", "Too many attempts — try again later"),
+        "This subscription was revoked" to Triple("This subscription was revoked", "این اشتراک باطل شده است", "This subscription was revoked"),
+        "Subscription inactive — renew to connect" to Triple("Subscription inactive — renew to connect", "اشتراک غیرفعال است — برای اتصال تمدید کن", "Subscription inactive — renew to connect"),
+        // ---- Original table ----
         "Send Code" to Triple("Send Code", "ارسال کد", "Send Code"),
         "Sign in with Firefox" to Triple("Sign in with Firefox", "ورود با حساب Firefox", "Sign in with Firefox"),
         "Anti-Censorship & Performance" to Triple("Anti-Censorship & Performance", "ضد سانسور و کارایی", "反审查与性能"),

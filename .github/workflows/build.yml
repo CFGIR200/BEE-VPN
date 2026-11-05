@@ -77,6 +77,8 @@ jobs:
           AETHERY_KEY_ALIAS: ${{ secrets.AETHERY_KEY_ALIAS }}
           AETHERY_KEY_PASSWORD: ${{ secrets.AETHERY_KEY_PASSWORD }}
           BEE_IDENTITY_RELAY_HMAC: ${{ secrets.BEE_IDENTITY_RELAY_HMAC }}
+          BEE_LICENSE_URL: ${{ secrets.BEE_LICENSE_URL }}
+          BEE_LICENSE_PUBKEY_B64: ${{ secrets.BEE_LICENSE_PUBKEY_B64 }}
           # foojay can no longer serve JDK 21, so stop Gradle trying to fetch
           # one and use the JDK installed above. auto-detect is Gradle's default.
           ORG_GRADLE_PROJECT_org.gradle.java.installations.auto-download: 'false'
@@ -86,6 +88,10 @@ jobs:
           # disabled at runtime. Set the BEE_IDENTITY_RELAY_HMAC repo secret
           # once your own relay worker is deployed.
           test -n "$BEE_IDENTITY_RELAY_HMAC" || echo 'WARN: BEE_IDENTITY_RELAY_HMAC not set - relay-assisted identity provisioning will be disabled in this build' >&2
+          # The subscription gate is OPTIONAL the same way: without these two
+          # secrets the gate compiles to a pass-through (see license/LICENSE-SETUP-FA.txt).
+          test -n "$BEE_LICENSE_URL" || echo 'WARN: BEE_LICENSE_URL not set - subscription gate will be disabled in this build' >&2
+          test -n "$BEE_LICENSE_PUBKEY_B64" || echo 'WARN: BEE_LICENSE_PUBKEY_B64 not set - subscription gate will be disabled in this build' >&2
           # AGP's ABI splitter has been failing nondeterministically inside
           # IncrementalSplitterRunnable after compile/lint already passed.
           # Serialize packaging so split APK writers cannot race, and retain

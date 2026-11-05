@@ -1,0 +1,24 @@
+# BEE-VPN sales bot — Cloudflare Worker config (same D1 database as the
+# license worker; D1 bindings may be attached to several Workers).
+# Deploy:
+#   wrangler deploy -c wrangler.bot.toml
+# Secrets (one-time each):
+#   wrangler secret put BOT_TOKEN       -c wrangler.bot.toml   # from @BotFather
+#   wrangler secret put WEBHOOK_SECRET  -c wrangler.bot.toml   # any long random string
+#   wrangler secret put ADMIN_IDS       -c wrangler.bot.toml   # your numeric Telegram id(s), csv
+#   wrangler secret put CARD_INFO       -c wrangler.bot.toml   # card-to-card line shown to buyers
+#   wrangler secret put USDT_INFO       -c wrangler.bot.toml   # USDT address/network line
+name = "beevpn-bot"
+main = "bot-worker.js"
+compatibility_date = "2025-06-01"
+
+[vars]
+CHANNEL_URL = "https://t.me/BEESELL_GP"
+SUPPORT_URL = "https://t.me/Bee_hive_VPN"
+# Prices are sample placeholders — edit to your real prices and redeploy.
+PRICES_JSON = '{"m1":{"title":"اشتراک یک‌ماهه","price":"۱۵۰٬۰۰۰ تومان"},"m3":{"title":"اشتراک سه‌ماهه (۱۰٪ تخفیف)","price":"۴۰۵٬۰۰۰ تومان"},"m6":{"title":"اشتراک شش‌ماهه (۲۰٪ تخفیف)","price":"۷۲۰٬۰۰۰ تومان"},"m12":{"title":"اشتراک دوازده‌ماهه (۳۰٪ تخفیف)","price":"۱٬۲۶۰٬۰۰۰ تومان"}}'
+
+[[d1_databases]]
+binding = "DB"
+database_name = "beevpn-license"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"

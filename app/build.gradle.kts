@@ -29,8 +29,8 @@ android {
         applicationId = "app.beevpn"
         minSdk = 26
         targetSdk = 36
-        versionCode = 450
-        versionName = "3.2.1"
+        versionCode = 451
+        versionName = "3.3.0"
         // The encoded CI value is safe in generated Kotlin source. This is still extractable from an APK.
         val relaySecret = System.getenv("BEE_IDENTITY_RELAY_HMAC").orEmpty()
         val relayEncoded = Base64.getEncoder().encodeToString(relaySecret.toByteArray(Charsets.UTF_8))
@@ -40,6 +40,14 @@ android {
         // placeholders below are skipped at runtime while no HMAC secret is set.
         buildConfigField("String", "BEE_RELAY_A", "\"${System.getenv("BEE_RELAY_A") ?: "https://beevpn-identity-relay-a.beevpn-edge-one.workers.dev"}\"")
         buildConfigField("String", "BEE_RELAY_B", "\"${System.getenv("BEE_RELAY_B") ?: "https://beevpn-identity-relay-b.beevpn-edge-two.workers.dev"}\"")
+        // Subscription gate (see license/LICENSE-SETUP-FA.txt). All four are
+        // OPTIONAL: with BEE_LICENSE_URL / BEE_LICENSE_PUBKEY_B64 unset the gate
+        // compiles to a no-op pass-through and the app behaves like the
+        // pre-license builds. Set both as GitHub secrets to switch the paywall on.
+        buildConfigField("String", "BEE_LICENSE_URL", "\"${System.getenv("BEE_LICENSE_URL") ?: ""}\"")
+        buildConfigField("String", "BEE_LICENSE_PUBKEY_B64", "\"${System.getenv("BEE_LICENSE_PUBKEY_B64") ?: ""}\"")
+        buildConfigField("String", "BEE_TELEGRAM_URL", "\"${System.getenv("BEE_TELEGRAM_URL") ?: "https://t.me/BEESELL_GP"}\"")
+        buildConfigField("String", "BEE_SUPPORT_URL", "\"${System.getenv("BEE_SUPPORT_URL") ?: "https://t.me/Bee_hive_VPN"}\"")
 
     }
     buildFeatures { buildConfig = true }

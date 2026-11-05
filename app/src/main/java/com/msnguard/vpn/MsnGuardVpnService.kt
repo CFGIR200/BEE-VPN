@@ -2385,6 +2385,17 @@ class MsnGuardVpnService : VpnService(), NativeCore.CoreCallback, PsiphonTunnel.
         EchEndpointRoster.maybeProbe(applicationContext)
         when (intent?.action) {
             ACTION_CONNECT -> intent.getStringExtra(EXTRA_CONFIG)?.let { config ->
+                // Defense in depth behind the UI gate: the tile and any
+                // auto-reconnect path also land here, and none of them may
+                // raise a tunnel for an expired or revoked device. The check
+                // is local (signature + expiry) so it costs no network round
+                // trip; revocation rides the 12-hourly /verify in
+                // LicenseManager.revalidateAsync, kicked from onResume.
+                if (LicenseManager.blocked(applicationContext)) {
+                    ConnectionLog.record("Connect refused: subscription is not active")
+                    failAndStop(Strings.t("Subscription inactive — renew to connect"))
+                    return@let
+                }
                 // A fresh user-initiated connect clears both the "user switched it
                 // off" latch and the backoff counter, so a manual retry always
                 // starts from the first, shortest delay.

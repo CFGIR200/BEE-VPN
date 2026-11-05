@@ -92,11 +92,17 @@ jobs:
           AETHERY_KEY_ALIAS: ${{ secrets.AETHERY_KEY_ALIAS }}
           AETHERY_KEY_PASSWORD: ${{ secrets.AETHERY_KEY_PASSWORD }}
           BEE_IDENTITY_RELAY_HMAC: ${{ secrets.BEE_IDENTITY_RELAY_HMAC }}
+          BEE_LICENSE_URL: ${{ secrets.BEE_LICENSE_URL }}
+          BEE_LICENSE_PUBKEY_B64: ${{ secrets.BEE_LICENSE_PUBKEY_B64 }}
           ORG_GRADLE_PROJECT_org.gradle.java.installations.auto-download: 'false'
         run: |
           # The identity-relay HMAC is OPTIONAL: without it the APK builds
           # fine, only relay-assisted identity provisioning is disabled.
           test -n "$BEE_IDENTITY_RELAY_HMAC" || echo 'WARN: BEE_IDENTITY_RELAY_HMAC not set - relay-assisted identity provisioning will be disabled in this build' >&2
+          # The subscription gate is OPTIONAL the same way: without these two
+          # secrets the gate compiles to a pass-through (see license/LICENSE-SETUP-FA.txt).
+          test -n "$BEE_LICENSE_URL" || echo 'WARN: BEE_LICENSE_URL not set - subscription gate will be disabled in this build' >&2
+          test -n "$BEE_LICENSE_PUBKEY_B64" || echo 'WARN: BEE_LICENSE_PUBKEY_B64 not set - subscription gate will be disabled in this build' >&2
           # Serialize packaging so split APK writers cannot race (see build.yml).
           ./gradlew --no-parallel --max-workers=1 --stacktrace assembleRelease -PaetheryKeystore=release.keystore
 

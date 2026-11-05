@@ -1,0 +1,155 @@
+راهنمای استقرار سیستم اشتراک BEE-VPN (سرور لایسنس + ربات فروش)
+================================================================
+
+این پوشه کل فروشگاه کندو است. سه قطعه دارد که به‌هم کار می‌کنند:
+
+  ┌─────────────┐      کد فعال‌سازی / حساب کاربری      ┌──────────────────┐
+  │ ربات تلگرام  │ ───────────────────────────────────▶ │  مشتری در اپ      │
+  │ (bot-worker) │  🛍 خرید · 🎁 تریال · 🧾 رسید         │  «کندو قفله 🐝»   │
+  └──────┬──────┘                                      └────────┬─────────┘
+         │ D1                                                   │ POST /activate یا /login
+         ▼                                                      ▼
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │ Cloudflare D1  ◀── activate / login / verify ──  license-worker.js   │
+  └─────────────────────────────────────────────────────────────────────┘
+
+* license-worker.js : سرور لایسنس. کد/حساب را به یک دستگاه بایند می‌کند و
+  توکن امضاشدهٔ Ed25519 برمی‌گرداند. اپ بدون تماس سرور هم تا پایان اشتراک
+  کار می‌کند (گریس = خودِ توکن)، و هر ~۱۲ ساعت در پس‌زمینه /verify می‌زند؛
+  باطل‌کردن (/revoke) در همان بررسی اعمال می‌شود.
+* bot-worker.js     : ربات فروش. کارت‌به‌کارت + تتر، صدور کد و حساب،
+  تریال ۱ روزه (یک‌بار برای هر حساب تلگرام)، فرمان‌های ادمین.
+* schema.sql        : جدول‌های D1 (licenses / accounts / attempts).
+
+پیش‌نیازها
+----------
+* حساب Cloudflare (پلن رایگان کافی است)
+* Node.js 18+ و wrangler:   npm install -g wrangler
+* یک ربات تلگرام از @BotFather (توکنش را نگه دار)
+* شناسهٔ عددی خودت در تلگرام (از @userinfobot بگیر)
+
+مرحلهٔ ۱ — دیتابیس D1
+---------------------
+  cd license
+  wrangler d1 create beevpn-license
+  # مقدار database_id خروجی را در wrangler.toml و wrangler.bot.toml بگذار
+  wrangler d1 execute beevpn-license --remote --file=schema.sql
+
+مرحلهٔ ۲ — جفت‌کلید امضا
+------------------------
+  node keygen.mjs
+
+دو مقدار چاپ می‌شود:
+  LICENSE_ED25519_PRIV_B64 = کلید خصوصی — فقط روی Worker لایسنس، هرگز در ریپو/APK
+  LICENSE_ED25519_PUB_B64  = کلید عمومی — در wrangler.toml و Secret گیت‌هاب
+
+⚠️ این جفت‌کلید فقط «یک‌بار» می‌سازید و نگه می‌دارید. عوض‌کردنش یعنی همهٔ
+توکن‌های نصب‌شده بی‌اعتبار می‌شوند و مشتری‌ها باید دوباره فعال‌سازی کنند.
+
+مرحلهٔ ۳ — سرور لایسنس
+----------------------
+  ۱) در license/wrangler.toml دو مقدار را عوض کن:
+       database_id            = از مرحلهٔ ۱
+       LICENSE_ED25519_PUB_B64 = از مرحلهٔ ۲
+  ۲)  wrangler deploy
+     آدرس Worker را نگه دار؛ شکلی مثل:
+       https://beevpn-license.<نام-حساب>.workers.dev
+  ۳)  wrangler secret put LICENSE_ED25519_PRIV_B64
+     (مقدار خصوصی مرحلهٔ ۲ را بچسبان)
+  ۴) تست سلامت:
+       curl https://<worker>/healthz
+       → {"ok":true,...}
+       curl https://<worker>/pubkey
+       → باید همان کلید عمومی مرحلهٔ ۲ را برگرداند
+  ۵) تست واقعی با یک کد دستی:
+       wrangler d1 execute beevpn-license --remote --command \
+         "INSERT INTO licenses (code,plan,status,duration_days,created_at) VALUES ('BEE-TEST-TEST-TEST2','m1','active',30,strftime('%s','now'))"
+       curl -X POST https://<worker>/activate \
+         -H 'content-type: application/json' \
+         -d '{"code":"BEE-TEST-TEST-TEST2","install_id":"0123456789abcdef0123456789abcdef"}'
+       → باید token برگرداند. بعدش کد تست را پاک کن:
+       wrangler d1 execute beevpn-license --remote --command \
+         "DELETE FROM licenses WHERE code='BEE-TEST-TEST-TEST2'"
+
+مرحلهٔ ۴ — ربات فروش
+--------------------
+  ۱) در license/wrangler.bot.toml همان database_id را بگذار و قیمت‌ها را
+     در PRICES_JSON ویرایش کن.
+  ۲)  wrangler deploy -c wrangler.bot.toml
+  ۳) Secretها:
+       wrangler secret put BOT_TOKEN       -c wrangler.bot.toml   (توکن BotFather)
+       wrangler secret put WEBHOOK_SECRET  -c wrangler.bot.toml   (یک رشتهٔ تصادفی طولانی)
+       wrangler secret put ADMIN_IDS       -c wrangler.bot.toml   (شناسهٔ عددی خودت)
+       wrangler secret put CARD_INFO       -c wrangler.bot.toml   (مثلاً: «۶۲۱۹-۸۶xx-xxxx-xxxx — به نام ...»)
+       wrangler secret put USDT_INFO       -c wrangler.bot.toml   (مثلاً: «TRC20: TXxx...» — فقط شبکه را دقیق بنویس)
+  ۴) وبهوک (یک‌بار):
+       curl "https://api.telegram.org/bot<TOKEN>/setWebhook" \
+            -d "url=https://beevpn-bot.<نام-حساب>.workers.dev/w" \
+            -d "secret_token=<WEBHOOK_SECRET>"
+  ۵) در ربات /start بزن → منو می‌آید. با اکانت ادمین:
+       /gen m1 1 تست     → یک کد یک‌ماهه می‌سازد
+       /helpadmin        → لیست کامل فرمان‌ها
+
+فرمان‌های ادمین
+---------------
+  /gen <m1|m3|m6|m12|trial> [تعداد] [یادداشت]   ساخت کد (تا ۵۰)
+  /adduser <username> <password> [plan]         ساخت حساب کاربری
+  /list [n]          آخرین کدها و حساب‌ها
+  /who <code|username>  جزئیات (وضعیت، انقضا، دستگاه)
+  /revoke …          باطل‌کردن (در /verify بعدی اپ اعمال می‌شود)
+  /unrevoke …        برگرداندن
+  /extend <code|username> <روز>  تمدید (روی انقضای فعلی اضافه می‌شود؛
+                                     اگر فعال نشده، به دوره اضافه می‌شود)
+  /reset <code|username>  آزادکردن بایند دستگاه (تغییر گوشی مشتری)
+  /stats             آمار کل
+
+جریان فروش (فاز ۱ — بدون درگاه)
+-------------------------------
+  ۱) مشتری در ربات پلن را انتخاب می‌کند → اطلاعات کارت/تتر را می‌بیند.
+  ۲) مشتری اسکرین‌شات رسید را می‌فرستد → برای تو فوروارد می‌شود.
+  ۳) تو بررسی می‌کنی و:  /gen m3 1
+  ۴) کد را همان‌جا برایش کپی می‌کنی. تمام.
+  تریال: خودکار است — هر حساب تلگرام یک‌بار «کد تست ۱ روزه» می‌گیرد.
+
+مرحلهٔ ۵ — اتصال به اپ (Secretهای گیت‌هاب)
+------------------------------------------
+  در ریپو: Settings → Secrets and variables → Actions → New repository secret:
+    BEE_LICENSE_URL        = آدرس Worker لایسنس (مرحلهٔ ۳)
+    BEE_LICENSE_PUBKEY_B64 = کلید عمومی مرحلهٔ ۲
+  بعد ورک‌فلو Release را دوباره اجرا کن (تگ جدید یا Re-run). در APK جدید
+  صفحهٔ «کندو قفله» فعال است.
+
+  ⚠️ اگر این دو Secret ست نباشند، اپ مثل قبل بدون قفل ساخته و منتشر می‌شود —
+  یعنی می‌توانی اول سرویس را بچینی، بعد قفل را روشنی.
+
+نکتهٔ مهم ایران: workers.dev
+----------------------------
+  دامنهٔ workers.dev روی خیلی از اپراتورها مختل یا کند است. برای سرور لایسنس
+  (که مشتری باید همان لحظهٔ خرید به آن برسد) حتماً یک دامنهٔ شخصی به Worker
+  وصل کن: Cloudflare Dash → Workers → دامنهٔ کار را باز کن → Settings →
+  Domains & Routes → Add → Custom domain (مثلاً license.beevpn.ir).
+  سپس همان دامنه را در BEE_LICENSE_URL بگذار. Worker ربات (که در تلگرام
+  باز می‌شود) معمولاً مشکلی ندارد، ولی همان کار برایش هم پیشنهاد می‌شود.
+
+امنیت — چرا این طراحی با سورس باز سازگار است
+--------------------------------------------
+  * ریپو AGPL و باز است؛ هرکس می‌تواند کد قفل اپ را بخواند و حذفش کند —
+    اما بی‌فایده است: توکن با کلید خصوصیِ روی Worker امضا می‌شود و اپِ دستکاری‌شده
+    به D1 و کدهای تو دسترسی ندارد. قفل واقعی، امضاست نه کد.
+  * کلید خصوصی فقط در secret توکلودفلیر؛ کلید عمومی عمداً عمومی است.
+  * رمز حساب‌ها PBKDF2-SHA256 (۱۲۰هزار دور) — فقط hash ذخیره می‌شود.
+  * هر اشتراک یک دستگاه؛ مقایسهٔ install_id سمت سرور.
+  * محدودسازی تلاش ناموفق: ۳۰ در ساعت به‌ازای هر IP (جدول attempts).
+  * /revoke سراسری: توکن‌های نصب‌شده در چک ۱۲ساعتهٔ بعدی می‌میرند.
+  * اینفو کارت و آدرس تتر در secret است تا در ریپوی عمومی دیده نشود.
+
+عیب‌یابی
+--------
+  * «signing key not configured» → secret put نکرده‌ای یا Worker را deploy مجدد نکرده‌ای.
+  * اپ می‌گوید «سرور لایسنس در دسترس نیست» → دامنه روی اپراتور مشتری فیلتر است؛
+    دامنهٔ شخصی بزن (بخش workers.dev).
+  * ربات جواب نمی‌دهد → setWebhook را دوباره بزن و secret_token را یکی کن؛
+    لاگ: wrangler tail beevpn-bot
+  * «bound to another device» → طبیعی است؛ اگر مشتری گوشی عوض کرده: /reset
+  * تست قبل از ریلیز: می‌توانی روی builds محلی با متغیرهای محیطی
+    BEE_LICENSE_URL / BEE_LICENSE_PUBKEY_B64 هم اجرا کنی.

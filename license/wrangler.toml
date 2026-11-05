@@ -1,0 +1,21 @@
+# BEE-VPN license server — Cloudflare Worker config
+# Deploy:
+#   npm install -g wrangler        (or: npx wrangler ...)
+#   wrangler d1 create beevpn-license          # copy the id below
+#   wrangler d1 execute beevpn-license --remote --file=schema.sql
+#   wrangler deploy
+# Secrets (one-time):
+#   wrangler secret put LICENSE_ED25519_PRIV_B64   # from node keygen.mjs
+name = "beevpn-license"
+main = "license-worker.js"
+compatibility_date = "2025-06-01"
+
+[vars]
+# Public by design: it ships inside the APK and is served by GET /pubkey.
+# Replace with the value printed by `node keygen.mjs`.
+LICENSE_ED25519_PUB_B64 = "REPLACE_WITH_PUBKEY_FROM_KEYGEN"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "beevpn-license"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"

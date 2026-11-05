@@ -54,8 +54,13 @@
         android:label="BEE-VPN"
         android:roundIcon="@mipmap/ic_launcher"
         android:theme="@style/Theme.BeeGuard">
+        <!-- The subscription gate is the launcher: it decides in onCreate whether
+             this device is entitled. Entitled builds (and builds with no license
+             server configured) hand straight to MainActivity without drawing.
+             MainActivity is no longer exported — nothing outside the app needs
+             to start it directly; the gate is the one front door. -->
         <activity
-            android:name=".MainActivity"
+            android:name=".LicenseGateActivity"
             android:exported="true"
             android:screenOrientation="portrait"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
@@ -67,6 +72,14 @@
                      Harmless on phones, and there is no reason to drop it. -->
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:theme="@style/Theme.BeeGuard.Starting">
             <!--
               Long-pressing the Quick Settings tile lands here.
               Android looks for an activity with this action; when nothing declares
