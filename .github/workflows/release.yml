@@ -150,11 +150,16 @@ jobs:
           ## BEE-VPN $VER
 
           Changes in this version:
-          - Same core as upstream BEEHIVE-GUARD 3.2.0 (versionCode 450)
-          - Fix: dead identity-relay ladder skipped — direct registration starts immediately, no more endless "Connecting"
-          - 7 connection modes: WireGuard, MASQUE, WARP-on-WARP (gool), Psiphon, Tor, Foxy, SHARD
+          - New: subscription paywall — the app opens on a "The hive is locked 🐝" gate;
+            activate with a code (BEE-XXXX-XXXX-XXXX) or sign in with your account
+          - 1-day free trial codes, issued by the @BEEHIVE_GUARD_BOT Telegram sales bot
+          - Entitlements are Ed25519-signed and bound to one device; they verify offline
+            and revocation propagates via a background check every ~12 h
+          - Fix (from 3.2.1): dead identity-relay ladder skipped — direct registration
+            starts immediately, no more endless "Connecting"
+          - 7 connection modes unchanged: WireGuard, MASQUE, WARP-on-WARP (gool),
+            Psiphon, Tor, Foxy, SHARD
           - Bee theme and icons, Persian + English UI
-          - Telegram channel and admin contact in the About screen
 
           **Downloads:** install the APK matching your device — most phones need \`arm64-v8a\`.
           \`SHA256SUMS.txt\` contains checksums to verify your download.

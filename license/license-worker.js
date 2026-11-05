@@ -82,9 +82,15 @@ function normalizeUsername(value) {
 }
 
 async function ed25519PrivateKey(env) {
-  const raw = b64urlDecode(String(env.LICENSE_ED25519_PRIV_B64 || ''));
-  if (raw.length !== 32) throw new Error('LICENSE_ED25519_PRIV_B64 must decode to 32 raw bytes');
-  return crypto.subtle.importKey('raw', raw, { name: 'Ed25519' }, false, ['sign']);
+  const seed = b64urlDecode(String(env.LICENSE_ED25519_PRIV_B64 || ''));
+  if (seed.length !== 32) throw new Error('LICENSE_ED25519_PRIV_B64 must decode to 32 raw bytes');
+  // RFC 8410 PKCS#8 wrapper around the raw 32-byte Ed25519 seed. WebCrypto's
+  // raw import is PUBLIC-only for Ed25519 (Workers and Node both reject raw
+  // private imports), while pkcs8 works everywhere.
+  const pkcs8 = new Uint8Array(48);
+  pkcs8.set(new Uint8Array([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20]), 0);
+  pkcs8.set(seed, 16);
+  return crypto.subtle.importKey('pkcs8', pkcs8, { name: 'Ed25519' }, false, ['sign']);
 }
 
 /** Signs the payload and returns the full `v1.p.sig` token string. */
@@ -182,107 +188,117 @@ async function bindAndIssue(env, row, table, keyColumn, keyValue, installId) {
 
 export default {
   async fetch(request, env) {
-    const url = new URL(request.url);
-
-    if (request.method === 'GET' && url.pathname === '/healthz') {
-      return json(null, 200, { ok: true, service: 'beevpn-license' });
-    }
-
-    if (request.method === 'GET' && url.pathname === '/pubkey') {
-      const pub = String(env.LICENSE_ED25519_PUB_B64 || '');
-      return pub ? json(null, 200, { ok: true, pubkey: pub }) : bad(500, 'public key not configured');
-    }
-
-    if (request.method !== 'POST') return bad(404, 'not found');
-
-    if (!env.DB) return bad(500, 'D1 binding missing');
-    if (!env.LICENSE_ED25519_PRIV_B64) return bad(500, 'signing key not configured');
-
-    let body;
     try {
-      const raw = await request.text();
-      if (raw.length > MAX_BODY_BYTES) return bad(413, 'body too large');
-      body = JSON.parse(raw);
-    } catch (_) {
-      return bad(400, 'invalid json');
+      return await handle(request, env);
+    } catch (e) {
+      // Never leak a Cloudflare 1101 page to the app — a JSON 500 is
+      // diagnosable from the client side and safe to log.
+      return bad(500, 'internal error: ' + String((e && e.message) || e));
     }
-
-    const installId = normalizeInstallId(body.install_id);
-
-    if (url.pathname === '/activate') {
-      const code = normalizeCode(body.code);
-      if (!code) return bad(400, 'invalid code format');
-      if (!installId) return bad(400, 'invalid install_id');
-      if (await throttled(env, request)) return bad(429, 'too many attempts, try later');
-      const row = await env.DB.prepare('SELECT * FROM licenses WHERE code = ?').bind(code).first();
-      if (!row) {
-        await recordAttempt(env, request, false);
-        return bad(401, 'unknown code');
-      }
-      const resp = await bindAndIssue(env, row, 'licenses', 'code', code, installId);
-      await recordAttempt(env, request, resp.status === 200);
-      return resp;
-    }
-
-    if (url.pathname === '/login') {
-      const username = normalizeUsername(body.username);
-      const password = typeof body.password === 'string' ? body.password : '';
-      if (!username || !password || password.length > 128) return bad(400, 'invalid username or password');
-      if (!installId) return bad(400, 'invalid install_id');
-      if (await throttled(env, request)) return bad(429, 'too many attempts, try later');
-      const row = await env.DB.prepare('SELECT * FROM accounts WHERE username = ?').bind(username).first();
-      if (!row) {
-        await recordAttempt(env, request, false);
-        return bad(401, 'wrong username or password');
-      }
-      const hash = await pbkdf2Hash(password, row.pass_salt);
-      if (!constantTimeEqual(hash, row.pass_hash)) {
-        await recordAttempt(env, request, false);
-        return bad(401, 'wrong username or password');
-      }
-      const resp = await bindAndIssue(env, row, 'accounts', 'username', username, installId);
-      await recordAttempt(env, request, resp.status === 200);
-      return resp;
-    }
-
-    if (url.pathname === '/verify') {
-      const token = typeof body.token === 'string' ? body.token : '';
-      if (!token.startsWith('v1.') || !installId) return bad(400, 'invalid token');
-      if (await throttled(env, request)) return bad(429, 'too many attempts, try later');
-      const parts = token.split('.');
-      if (parts.length !== 3) return bad(400, 'invalid token');
-      let payload;
-      try {
-        payload = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[1])));
-      } catch (_) {
-        return bad(400, 'invalid token');
-      }
-      const now = Math.floor(Date.now() / 1000);
-      if (payload.i !== installId) return bad(403, 'device mismatch');
-      if (!payload.e || payload.e <= now) return bad(403, 'expired');
-
-      // The signature proved the token is ours; the DB lookup proves the
-      // entitlement still is. Revocation and admin extends both land here.
-      if (payload.k === 'account') {
-        const row = await env.DB.prepare('SELECT * FROM accounts WHERE username = ?').bind(String(payload.s)).first();
-        if (!row || row.status !== 'active') return bad(403, 'revoked');
-        if (row.bound_install_id && row.bound_install_id !== installId) return bad(403, 'bound to another device');
-        if (row.expires_at && row.expires_at <= now) return bad(403, 'expired');
-        const fresh = await issueToken(env, {
-          s: row.username, k: 'account', p: row.plan, i: installId, e: row.expires_at, t: now,
-        });
-        return json(null, 200, { ok: true, token: fresh, subject: row.username, plan: row.plan, kind: 'account', expiry: row.expires_at });
-      }
-      const row = await env.DB.prepare('SELECT * FROM licenses WHERE code = ?').bind(String(payload.s)).first();
-      if (!row || row.status !== 'active') return bad(403, 'revoked');
-      if (row.bound_install_id && row.bound_install_id !== installId) return bad(403, 'bound to another device');
-      if (row.expires_at && row.expires_at <= now) return bad(403, 'expired');
-      const fresh = await issueToken(env, {
-        s: row.code, k: 'code', p: row.plan, i: installId, e: row.expires_at, t: now,
-      });
-      return json(null, 200, { ok: true, token: fresh, subject: row.code, plan: row.plan, kind: 'code', expiry: row.expires_at });
-    }
-
-    return bad(404, 'not found');
   },
 };
+
+async function handle(request, env) {
+  const url = new URL(request.url);
+
+if (request.method === 'GET' && url.pathname === '/healthz') {
+  return json(null, 200, { ok: true, service: 'beevpn-license' });
+}
+
+if (request.method === 'GET' && url.pathname === '/pubkey') {
+  const pub = String(env.LICENSE_ED25519_PUB_B64 || '');
+  return pub ? json(null, 200, { ok: true, pubkey: pub }) : bad(500, 'public key not configured');
+}
+
+if (request.method !== 'POST') return bad(404, 'not found');
+
+if (!env.DB) return bad(500, 'D1 binding missing');
+if (!env.LICENSE_ED25519_PRIV_B64) return bad(500, 'signing key not configured');
+
+let body;
+try {
+  const raw = await request.text();
+  if (raw.length > MAX_BODY_BYTES) return bad(413, 'body too large');
+  body = JSON.parse(raw);
+} catch (_) {
+  return bad(400, 'invalid json');
+}
+
+const installId = normalizeInstallId(body.install_id);
+
+if (url.pathname === '/activate') {
+  const code = normalizeCode(body.code);
+  if (!code) return bad(400, 'invalid code format');
+  if (!installId) return bad(400, 'invalid install_id');
+  if (await throttled(env, request)) return bad(429, 'too many attempts, try later');
+  const row = await env.DB.prepare('SELECT * FROM licenses WHERE code = ?').bind(code).first();
+  if (!row) {
+    await recordAttempt(env, request, false);
+    return bad(401, 'unknown code');
+  }
+  const resp = await bindAndIssue(env, row, 'licenses', 'code', code, installId);
+  await recordAttempt(env, request, resp.status === 200);
+  return resp;
+}
+
+if (url.pathname === '/login') {
+  const username = normalizeUsername(body.username);
+  const password = typeof body.password === 'string' ? body.password : '';
+  if (!username || !password || password.length > 128) return bad(400, 'invalid username or password');
+  if (!installId) return bad(400, 'invalid install_id');
+  if (await throttled(env, request)) return bad(429, 'too many attempts, try later');
+  const row = await env.DB.prepare('SELECT * FROM accounts WHERE username = ?').bind(username).first();
+  if (!row) {
+    await recordAttempt(env, request, false);
+    return bad(401, 'wrong username or password');
+  }
+  const hash = await pbkdf2Hash(password, row.pass_salt);
+  if (!constantTimeEqual(hash, row.pass_hash)) {
+    await recordAttempt(env, request, false);
+    return bad(401, 'wrong username or password');
+  }
+  const resp = await bindAndIssue(env, row, 'accounts', 'username', username, installId);
+  await recordAttempt(env, request, resp.status === 200);
+  return resp;
+}
+
+if (url.pathname === '/verify') {
+  const token = typeof body.token === 'string' ? body.token : '';
+  if (!token.startsWith('v1.') || !installId) return bad(400, 'invalid token');
+  if (await throttled(env, request)) return bad(429, 'too many attempts, try later');
+  const parts = token.split('.');
+  if (parts.length !== 3) return bad(400, 'invalid token');
+  let payload;
+  try {
+    payload = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[1])));
+  } catch (_) {
+    return bad(400, 'invalid token');
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (payload.i !== installId) return bad(403, 'device mismatch');
+  if (!payload.e || payload.e <= now) return bad(403, 'expired');
+
+  // The signature proved the token is ours; the DB lookup proves the
+  // entitlement still is. Revocation and admin extends both land here.
+  if (payload.k === 'account') {
+    const row = await env.DB.prepare('SELECT * FROM accounts WHERE username = ?').bind(String(payload.s)).first();
+    if (!row || row.status !== 'active') return bad(403, 'revoked');
+    if (row.bound_install_id && row.bound_install_id !== installId) return bad(403, 'bound to another device');
+    if (row.expires_at && row.expires_at <= now) return bad(403, 'expired');
+    const fresh = await issueToken(env, {
+      s: row.username, k: 'account', p: row.plan, i: installId, e: row.expires_at, t: now,
+    });
+    return json(null, 200, { ok: true, token: fresh, subject: row.username, plan: row.plan, kind: 'account', expiry: row.expires_at });
+  }
+  const row = await env.DB.prepare('SELECT * FROM licenses WHERE code = ?').bind(String(payload.s)).first();
+  if (!row || row.status !== 'active') return bad(403, 'revoked');
+  if (row.bound_install_id && row.bound_install_id !== installId) return bad(403, 'bound to another device');
+  if (row.expires_at && row.expires_at <= now) return bad(403, 'expired');
+  const fresh = await issueToken(env, {
+    s: row.code, k: 'code', p: row.plan, i: installId, e: row.expires_at, t: now,
+  });
+  return json(null, 200, { ok: true, token: fresh, subject: row.code, plan: row.plan, kind: 'code', expiry: row.expires_at });
+}
+
+return bad(404, 'not found');
+}

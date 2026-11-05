@@ -61,15 +61,16 @@
        → {"ok":true,...}
        curl https://<worker>/pubkey
        → باید همان کلید عمومی مرحلهٔ ۲ را برگرداند
-  ۵) تست واقعی با یک کد دستی:
+  ۵) تست واقعی با یک کد دستی (کد باید دقیقاً BEE-XXXX-XXXX-XXXX باشد —
+     هر گروه ۴ کاراکتر، بدون 0/1/ O/I/L):
        wrangler d1 execute beevpn-license --remote --command \
-         "INSERT INTO licenses (code,plan,status,duration_days,created_at) VALUES ('BEE-TEST-TEST-TEST2','m1','active',30,strftime('%s','now'))"
+         "INSERT INTO licenses (code,plan,status,duration_days,created_at) VALUES ('BEE-TEST-TEST-TEST','m1','active',30,strftime('%s','now'))"
        curl -X POST https://<worker>/activate \
          -H 'content-type: application/json' \
-         -d '{"code":"BEE-TEST-TEST-TEST2","install_id":"0123456789abcdef0123456789abcdef"}'
+         -d '{"code":"BEE-TEST-TEST-TEST","install_id":"0123456789abcdef0123456789abcdef"}'
        → باید token برگرداند. بعدش کد تست را پاک کن:
        wrangler d1 execute beevpn-license --remote --command \
-         "DELETE FROM licenses WHERE code='BEE-TEST-TEST-TEST2'"
+         "DELETE FROM licenses WHERE code='BEE-TEST-TEST-TEST'"
 
 مرحلهٔ ۴ — ربات فروش
 --------------------
