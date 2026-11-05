@@ -44,10 +44,30 @@ def extract(body_text):
                 break
         if not masks:
             raise ValueError("no tcp-fragment-tls masks in %r" % name)
-        for m in masks:  # shape check, not full validation
-            if m.get("type") != "fragment" or "settings" not in m:
-                raise ValueError("bad mask in %r" % name)
-        profiles.append({"name": name, "masks": masks})
+        # Upstream v58 (2026-11-05) added a new mask type — "merge" (a small-
+        # write batching layer) — alongside the fragments. The app copies
+        # finalmask.tcp verbatim into the Xray config (ShardConfigs.kt), and
+        # the fleet has only ever been served fragment-only mirrors (v51..v55).
+        # Whitelist fragments, drop anything else: a mask type the bundled
+        # core may not parse is not worth the fleet's Smart Split.
+        kept = [m for m in masks
+                if m.get("type") == "fragment" and isinstance(m.get("settings"), dict)]
+        dropped = len(masks) - len(kept)
+        if dropped:
+            print("note: %s: dropped %d non-fragment mask(s) (%s)"
+                  % (name, dropped,
+                     ", ".join(sorted({m.get("type", "?") for m in masks
+                                       if not (m.get("type") == "fragment"
+                                               and isinstance(m.get("settings"), dict))}))),
+                  file=sys.stderr)
+        if not kept:
+            # A fragB profile whose fragments are all gone is useless to us;
+            # skip it rather than fail the whole sync. If EVERY profile dies
+            # this way the "no profiles survived" error below fires anyway.
+            print("note: %s: no fragment masks left, skipping profile" % name,
+                  file=sys.stderr)
+            continue
+        profiles.append({"name": name, "masks": kept})
     if not profiles:
         # Upstream renames its configs between versions (v50 -> v51 on
         # 2026-09-20). A hard failure here takes Smart Split offline for every
