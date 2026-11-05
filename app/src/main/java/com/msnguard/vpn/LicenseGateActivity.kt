@@ -5,7 +5,6 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
-import android.net.Uri
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
@@ -80,9 +79,11 @@ class LicenseGateActivity : Activity() {
     }
 
     private fun openUrl(url: String) {
-        try {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-        } catch (_: Exception) {
+        // t.me links (buy / trial / support) must land in the Telegram app
+        // itself, not a browser: App Links verification never happens on the
+        // Play-Services-less phones most of our users run, so a bare
+        // ACTION_VIEW opens Chrome where the sales bot is unreachable.
+        if (!TelegramOpener.open(this, url)) {
             Toast.makeText(this, Strings.t("No browser found"), Toast.LENGTH_SHORT).show()
         }
     }

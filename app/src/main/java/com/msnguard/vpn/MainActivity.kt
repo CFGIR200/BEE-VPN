@@ -9395,7 +9395,10 @@ class MainActivity : Activity() {
     }
 
     private fun openLink(url: String) {
-        runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+        // Routed through TelegramOpener: the t.me rows (channel, admin) open
+        // the official Telegram app instead of a browser; every other URL
+        // (e.g. the GitHub repo row) behaves exactly as before.
+        runCatching { TelegramOpener.open(this, url) }
     }
 
 
