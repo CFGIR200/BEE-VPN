@@ -1,0 +1,109 @@
+<!--
+  The XML theme now carries the same Orbit values as AppAppearance.ORBIT.
+
+  BEE-VPN palette: honey amber (#FFC107) accents on the near-black canvas. The
+  values here must mirror AppAppearance.ORBIT / AppAppearance.PORCELAIN exactly —
+  anything the framework paints for us (the pre-inflate splash window,
+  AlertDialogs, edit-text handles, ripple defaults) reads from this file, and a
+  mismatch is how the app flashes a foreign colour on launch.
+
+  Parent is DarkActionBar-free *Dark*, not DayNight: the layout is designed for a
+  dark canvas only, and DayNight let a phone in light mode hand the dialogs white
+  surfaces with near-white text on them.
+-->
+<resources>
+    <style name="Theme.BeeGuard" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <!-- honey / amber accents, straight from the approved mock -->
+        <item name="colorPrimary">#FFC107</item>
+        <item name="colorOnPrimary">#04070B</item>
+        <item name="colorSecondary">#FFE082</item>
+        <item name="colorError">#FF6B7F</item>
+        <!-- void / raised / recessed surfaces -->
+        <item name="android:colorBackground">#04070B</item>
+        <item name="colorSurface">#0B1116</item>
+        <item name="colorOnSurface">#EAF6F3</item>
+        <item name="colorSurfaceVariant">#111A20</item>
+        <item name="colorOnSurfaceVariant">#9DB0B5</item>
+        <item name="colorOutline">#1C2429</item>
+        <item name="android:navigationBarColor">#04070B</item>
+        <item name="android:statusBarColor">#04070B</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="materialAlertDialogTheme">@style/ThemeOverlay.BeeGuard.AlertDialog</item>
+   </style>
+
+    <!--
+      The window the system shows before onCreate finishes. Same void background
+      as the canvas, so launching the app does not flash a lighter panel before
+      the Orbit console appears.
+    -->
+    <style name="Theme.BeeGuard.Starting" parent="Theme.BeeGuard">
+        <item name="android:windowBackground">#04070B</item>
+   </style>
+
+    <!--
+      Invisible, non-animating window used only to collapse the Quick Settings
+      shade (see ShadeCollapseActivity). It must never paint anything: a normal
+      theme would flash the void background over whatever is behind the shade.
+    -->
+    <style name="Theme.BeeGuard.Invisible" parent="android:Theme.Translucent.NoTitleBar">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:backgroundDimEnabled">false</item>
+   </style>
+
+    <style name="ThemeOverlay.BeeGuard.AlertDialog" parent="ThemeOverlay.Material3.MaterialAlertDialog">
+        <item name="shapeAppearanceMediumComponent">@style/ShapeAppearance.BeeGuard.Dialog</item>
+        <item name="colorSurface">#0B1116</item>
+        <item name="colorOnSurface">#EAF6F3</item>
+        <item name="colorPrimary">#FFC107</item>
+   </style>
+
+    <style name="ShapeAppearance.BeeGuard.Dialog" parent="ShapeAppearance.Material3.MediumComponent">
+        <item name="cornerSize">28dp</item>
+   </style>
+
+    <!--
+      Porcelain: the light half of the theme switch.
+
+      This is a second explicit theme, NOT a values-night/ split. The palette is
+      the user's choice inside the app, not the phone's night setting, so a
+      resource qualifier would pick the wrong one whenever the two disagree.
+      MainActivity applies whichever of these matches AppAppearance.mode()
+      before super.onCreate().
+
+      Values mirror AppAppearance.PORCELAIN exactly: deep honey (#8A5D00) as the
+      light-theme primary — bright amber never clears 4.5:1 on white, so the
+      text-capable shade lives here and the vivid amber stays a shape colour.
+    -->
+    <style name="Theme.BeeGuard.Light" parent="Theme.Material3.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="colorPrimary">#8A5D00</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="colorSecondary">#B07F00</item>
+        <item name="colorError">#B3261E</item>
+        <item name="android:colorBackground">#EEF1F4</item>
+        <item name="colorSurface">#FFFFFF</item>
+        <item name="colorOnSurface">#111A1F</item>
+        <item name="colorSurfaceVariant">#FFFFFF</item>
+        <item name="colorOnSurfaceVariant">#4E6069</item>
+        <item name="colorOutline">#E0E6EA</item>
+        <item name="android:navigationBarColor">#EEF1F4</item>
+        <item name="android:statusBarColor">#EEF1F4</item>
+        <!-- Dark icons in the bars: the bars are now near-white. -->
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="materialAlertDialogTheme">@style/ThemeOverlay.BeeGuard.Light.AlertDialog</item>
+   </style>
+
+    <style name="ThemeOverlay.BeeGuard.Light.AlertDialog" parent="ThemeOverlay.Material3.MaterialAlertDialog">
+        <item name="shapeAppearanceMediumComponent">@style/ShapeAppearance.BeeGuard.Dialog</item>
+        <item name="colorSurface">#FFFFFF</item>
+        <item name="colorOnSurface">#111A1F</item>
+        <item name="colorPrimary">#7A5300</item>
+   </style>
+</resources>

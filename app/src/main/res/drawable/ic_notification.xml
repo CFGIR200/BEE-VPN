@@ -1,0 +1,39 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- BEE-VPN bee glyph: two tilted wings, striped body, head. Status-bar safe:
+         single flat colour, no alpha, reads at 18dp. -->
+    <group
+        android:rotation="-28"
+        android:pivotX="7.4"
+        android:pivotY="10.8">
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M4.2,10.8 a3.2,2.1 0 1,0 6.4,0 a3.2,2.1 0 1,0 -6.4,0 z" />
+    </group>
+    <group
+        android:rotation="28"
+        android:pivotX="16.6"
+        android:pivotY="10.8">
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M13.4,10.8 a3.2,2.1 0 1,0 6.4,0 a3.2,2.1 0 1,0 -6.4,0 z" />
+    </group>
+    <!-- head -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M12,8.9 m-1.5,0 a1.5,1.5 0 1,0 3,0 a1.5,1.5 0 1,0 -3,0 z" />
+    <!-- antennae -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="0.9"
+        android:strokeLineCap="round"
+        android:pathData="M11.2,7.7 Q10.5,6.6 9.5,6.1 M12.8,7.7 Q13.5,6.6 14.5,6.1" />
+    <!-- striped abdomen: evenOdd cuts the two bands out of the body ellipse -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M9,15.4 a3,4.7 0 1,0 6,0 a3,4.7 0 1,0 -6,0 z M8,12.9 h8 v1.15 h-8 z M8,16.1 h8 v1.15 h-8 z" />
+</vector>

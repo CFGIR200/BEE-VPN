@@ -1,0 +1,162 @@
+name: Release BEE-VPN
+
+# Publishes a GitHub Release exactly like the upstream project's releases:
+# on every `v*` tag push, builds the signed APKs, renames them to
+# BEE-VPN-<version>-<abi>.apk, attaches them plus SHA256SUMS.txt to a
+# GitHub Release. No manual upload needed.
+
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and release (e.g. v3.2.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      REF: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # aether/Compose/KGP request a JDK 21 toolchain. foojay (the resolver
+      # Gradle downloads JDKs from) no longer lists Temurin or JetBrains for 21
+      # — its redirect answers 400 — so it cannot fetch one. Install 21 here
+      # and let Gradle's auto-detect find it instead of downloading.
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "ndk;26.3.11579264 cmake;3.22.1"
+          accept-android-sdk-licenses: "true"
+
+      - name: Install Rust and targets
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source $HOME/.cargo/env
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+          cargo install cargo-ndk
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Setup signing keystore
+        env:
+          AETHERY_KEYSTORE_BASE64: ${{ secrets.AETHERY_KEYSTORE_BASE64 }}
+          AETHERY_KEYSTORE_PASSWORD: ${{ secrets.AETHERY_KEYSTORE_PASSWORD }}
+          AETHERY_KEY_ALIAS: ${{ secrets.AETHERY_KEY_ALIAS }}
+          AETHERY_KEY_PASSWORD: ${{ secrets.AETHERY_KEY_PASSWORD }}
+        run: |
+          echo "$AETHERY_KEYSTORE_BASE64" | base64 -d > release.keystore
+          cat > keystore.env <<EOF
+          storePassword=$AETHERY_KEYSTORE_PASSWORD
+          keyAlias=$AETHERY_KEY_ALIAS
+          keyPassword=$AETHERY_KEY_PASSWORD
+          EOF
+
+      - name: Build hev-socks5-tunnel (ndk-build)
+        run: |
+          set -e
+          NDK=$ANDROID_HOME/ndk/26.3.11579264
+          if [ -d app/src/main/cpp/hev ]; then
+            $NDK/ndk-build -C app/src/main/cpp/hev NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=Android.mk NDK_APPLICATION_MK=Application.mk -j$(nproc)
+            for abi in arm64-v8a armeabi-v7a x86_64; do src="app/src/main/cpp/hev/libs/$abi/libhev-socks5-tunnel.so"; dst="app/src/main/jniLibs/$abi/libhev-socks5-tunnel.so"; if [ -f "$src" ]; then mkdir -p "app/src/main/jniLibs/$abi"; cp "$src" "$dst"; echo "vendored hev $abi $(stat -c%s "$dst") bytes"; else echo "WARN: hev $abi not built"; fi; done
+          else
+            echo "hev source not present - skipping (legacy engine only)"
+          fi
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build Release APKs
+        env:
+          AETHERY_KEYSTORE_PASSWORD: ${{ secrets.AETHERY_KEYSTORE_PASSWORD }}
+          AETHERY_KEY_ALIAS: ${{ secrets.AETHERY_KEY_ALIAS }}
+          AETHERY_KEY_PASSWORD: ${{ secrets.AETHERY_KEY_PASSWORD }}
+          BEE_IDENTITY_RELAY_HMAC: ${{ secrets.BEE_IDENTITY_RELAY_HMAC }}
+          ORG_GRADLE_PROJECT_org.gradle.java.installations.auto-download: 'false'
+        run: |
+          # The identity-relay HMAC is OPTIONAL: without it the APK builds
+          # fine, only relay-assisted identity provisioning is disabled.
+          test -n "$BEE_IDENTITY_RELAY_HMAC" || echo 'WARN: BEE_IDENTITY_RELAY_HMAC not set - relay-assisted identity provisioning will be disabled in this build' >&2
+          # Serialize packaging so split APK writers cannot race (see build.yml).
+          ./gradlew --no-parallel --max-workers=1 --stacktrace assembleRelease -PaetheryKeystore=release.keystore
+
+      - name: Verify APK signatures
+        run: |
+          SIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -1)
+          for apk in app/build/outputs/apk/release/*.apk; do
+            "$SIGNER" verify --verbose --print-certs "$apk" > "$apk.signing.txt"
+            "$SIGNER" verify --verbose --print-certs --min-sdk-version 23 --max-sdk-version 23 "$apk" > "$apk.v1.txt"
+            grep -q "Verified using v1 scheme.*: true" "$apk.v1.txt"
+            for scheme in 2 3; do
+              grep -q "Verified using v$scheme scheme.*: true" "$apk.signing.txt"
+            done
+          done
+
+      - name: Collect and rename APKs
+        run: |
+          set -e
+          VER="${REF#v}"
+          mkdir -p dist
+          cd app/build/outputs/apk/release
+          for f in app-*.apk; do
+            case "$f" in
+              app-arm64-v8a-release.apk)   out="BEE-VPN-$VER-arm64-v8a.apk" ;;
+              app-armeabi-v7a-release.apk) out="BEE-VPN-$VER-armeabi-v7a.apk" ;;
+              app-x86_64-release.apk)      out="BEE-VPN-$VER-x86_64-emulator.apk" ;;
+              app-universal-release.apk)   out="BEE-VPN-$VER-universal.apk" ;;
+              *)                           out="BEE-VPN-$VER-$f" ;;
+            esac
+            cp "$f" "$GITHUB_WORKSPACE/dist/$out"
+            echo "dist/$out  <-  $f"
+          done
+          cd "$GITHUB_WORKSPACE/dist"
+          sha256sum *.apk > SHA256SUMS.txt
+          ls -lh
+
+      - name: Create GitHub Release and upload APKs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          TAG="$REF"
+          VER="${TAG#v}"
+          cat > notes.md <<EOF
+          ## BEE-VPN $VER
+
+          Changes in this version:
+          - Same core as upstream MSN-GUARD 3.2.0 (versionCode 449)
+          - 7 connection modes: WireGuard, MASQUE, WARP-on-WARP (gool), Psiphon, Tor, Foxy, SHARD
+          - Bee theme and icons, Persian + English UI
+          - Telegram channel and admin contact in the About screen
+
+          **Downloads:** install the APK matching your device — most phones need \`arm64-v8a\`.
+          \`SHA256SUMS.txt\` contains checksums to verify your download.
+          EOF
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists - uploading assets with --clobber"
+            gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
+              --title "BEE-VPN $VER" --notes-file notes.md
+          fi
+          echo "Published: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"
