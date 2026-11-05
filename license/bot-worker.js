@@ -82,9 +82,21 @@ function planDays(plan) {
 function fmtExpiry(row, now) {
   if (!row.expires_at) return '⏳ فعال نشده (از اولین فعال‌سازی شروع می‌شود)';
   const left = Math.floor((row.expires_at - now) / 86400);
-  const when = new Date(row.expires_at * 1000).toISOString().slice(0, 10);
+  const when = faDate(row.expires_at);
   if (row.expires_at <= now) return `❌ منقضی شده (${when})`;
   return `✅ ${left + 1} روز باقی‌مانده — تا ${when}`;
+}
+
+// Iran has been UTC+3:30 year-round since 2022 (no DST) — all buyer-facing
+// dates are shown in Tehran time, not the Worker's UTC.
+const TEHRAN_OFFSET = 12600;
+
+function faDate(epochSec) {
+  return new Date((epochSec + TEHRAN_OFFSET) * 1000).toISOString().slice(0, 10);
+}
+
+function faDateTime(epochSec) {
+  return new Date((epochSec + TEHRAN_OFFSET) * 1000).toISOString().slice(0, 16).replace('T', ' ');
 }
 
 async function tg(env, method, body) {
@@ -395,7 +407,9 @@ async function cmdGen(env, chatId, args) {
     return send(env, chatId, 'فرمت: <code>/gen m1|m3|m6|m12|trial [تعداد] [یادداشت]</code>');
   }
   const count = Math.min(Math.max(parseInt(args[1] || '1', 10) || 1, 1), 50);
-  const note = args.slice(2).join(' ') || null;
+  let note = args.slice(2).join(' ') || null;
+  // «receipt:…» is reserved for the approval flow's idempotency key.
+  if (note && note.startsWith('receipt:')) note = 'manual:' + note;
   const rows = [];
   for (let i = 0; i < count; i++) {
     const code = randomCode();
@@ -472,15 +486,21 @@ async function whoBuyer(env, chatId, uid) {
     return send(env, chatId, '❌ برای این شناسهٔ تلگرام چیزی ثبت نشده.');
   }
   for (const r of rows) {
-    const when = new Date(r.created_at * 1000).toISOString().slice(0, 10);
+    const when = faDate(r.created_at);
     const live = r.expires_at ? (r.expires_at > now ? '🟢' : '🔴') : '⏳';
-    lines.push(`${live} <code>${esc(r.code)}</code> ${esc(r.plan)} ${r.status === 'active' ? '' : '⛔'} — ${when}`);
+    if (r.plan === 'trial') {
+      lines.push(`🎁 <code>${esc(r.code)}</code> تست — ${when}`);
+    } else {
+      lines.push(`${live} <code>${esc(r.code)}</code> ${esc(r.plan)} ${r.status === 'active' ? '' : '⛔'} — ${when}`);
+    }
   }
   for (const r of acc.results || []) {
     const live = r.expires_at ? (r.expires_at > now ? '🟢' : '🔴') : '⏳';
     lines.push(`${live} 👤 <code>${esc(r.username)}</code> ${esc(r.plan)} ${r.status === 'active' ? '' : '⛔'}`);
   }
-  lines.push('', `مجموع: ${rows.length} کد — ${liveCount(rows, now)} در جریان`);
+  const paid = rows.filter((r) => r.plan !== 'trial');
+  const trialN = rows.length - paid.length;
+  lines.push('', `مجموع: ${paid.length} خرید — ${liveCount(paid, now)} در جریان` + (trialN ? ` — ${trialN} تست 🎁` : ''));
   return send(env, chatId, lines.join('\n'));
 }
 
@@ -513,7 +533,7 @@ async function cmdExtend(env, chatId, args) {
   const base = Math.max(nowSec(), r.expires_at);
   await env.DB.prepare(`UPDATE ${table} SET expires_at = ? WHERE ${column} = ?`)
     .bind(base + days * 86400, r[column]).run();
-  return send(env, chatId, `➕ ${days} روز اضافه شد — انقضای جدید: <b>${new Date((base + days * 86400) * 1000).toISOString().slice(0, 10)}</b>`);
+  return send(env, chatId, `➕ ${days} روز اضافه شد — انقضای جدید: <b>${faDate(base + days * 86400)}</b>`);
 }
 
 async function cmdReset(env, chatId, args) {
@@ -524,7 +544,7 @@ async function cmdReset(env, chatId, args) {
   const column = found.kind === 'license' ? 'code' : 'username';
   await env.DB.prepare(`UPDATE ${table} SET bound_install_id = NULL, activated_at = NULL, expires_at = NULL WHERE ${column} = ?`)
     .bind(found.row[column]).run();
-  return send(env, chatId, '🔁 بایند دستگاه پاک شد — دوربین بعدی که فعال کند، ساعت از نو شروع می‌شود. (دورهٔ قبلی باطل است)');
+  return send(env, chatId, '🔁 بایند دستگاه پاک شد — دستگاه بعدی که فعال کند، ساعت از نو شروع می‌شود. (دورهٔ قبلی باطل است)');
 }
 
 async function cmdStats(env, chatId) {
@@ -539,12 +559,17 @@ async function cmdStats(env, chatId) {
   const liveAcc = await env.DB.prepare('SELECT COUNT(*) AS n FROM accounts WHERE expires_at > ?').bind(now).first();
   const liveN = (liveLic ? liveLic.n : 0) + (liveAcc ? liveAcc.n : 0);
   // The «who is buying» picture: distinct buyers, recent sales, plan mix.
+  // Trial codes are gifts, not sales — they are counted separately so the
+  // sales numbers stay honest.
   const buyers = await env.DB.prepare(
-    'SELECT COUNT(DISTINCT telegram_user_id) AS n FROM licenses WHERE telegram_user_id IS NOT NULL',
+    "SELECT COUNT(DISTINCT telegram_user_id) AS n FROM licenses WHERE telegram_user_id IS NOT NULL AND plan != 'trial'",
   ).first();
-  const d7 = await env.DB.prepare('SELECT COUNT(*) AS n FROM licenses WHERE created_at > ?').bind(now - 7 * 86400).first();
-  const d30 = await env.DB.prepare('SELECT COUNT(*) AS n FROM licenses WHERE created_at > ?').bind(now - 30 * 86400).first();
-  const mix = await env.DB.prepare('SELECT plan, COUNT(*) AS n FROM licenses GROUP BY plan ORDER BY n DESC').all();
+  const d7 = await env.DB.prepare("SELECT COUNT(*) AS n FROM licenses WHERE created_at > ? AND plan != 'trial'").bind(now - 7 * 86400).first();
+  const d30 = await env.DB.prepare("SELECT COUNT(*) AS n FROM licenses WHERE created_at > ? AND plan != 'trial'").bind(now - 30 * 86400).first();
+  const trials = await env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM licenses WHERE plan = 'trial' AND created_at > ?",
+  ).bind(now - 7 * 86400).first();
+  const mix = await env.DB.prepare("SELECT plan, COUNT(*) AS n FROM licenses WHERE plan != 'trial' GROUP BY plan ORDER BY n DESC").all();
   const mixLine = (mix.results || []).map((r) => `${esc(r.plan)}×${r.n}`).join(' — ');
   await send(env, chatId, [
     '📊 <b>آمار کندو</b>',
@@ -555,6 +580,7 @@ async function cmdStats(env, chatId) {
     `🧑‍🤝‍🧑 خریداران: <b>${buyers ? buyers.n : 0}</b> نفر`,
     `🛒 فروش ۷ روز: <b>${d7 ? d7.n : 0}</b> — ۳۰ روز: <b>${d30 ? d30.n : 0}</b>`,
     `🏷 پلن‌ها: ${mixLine || '—'}`,
+    `🎁 تست ۱ روزه — ۷ روز اخیر: ${trials ? trials.n : 0}`,
     '',
     '👥 لیست خریداران: <code>/buyers</code>',
   ].join('\n'));
@@ -568,11 +594,11 @@ async function cmdBuyers(env, chatId, args) {
             SUM(CASE WHEN expires_at > ? THEN 1 ELSE 0 END) AS live,
             SUM(CASE WHEN status = 'revoked' THEN 1 ELSE 0 END) AS banned,
             MAX(created_at) AS last
-     FROM licenses WHERE telegram_user_id IS NOT NULL
+     FROM licenses WHERE telegram_user_id IS NOT NULL AND plan != 'trial'
      GROUP BY telegram_user_id ORDER BY n DESC, last DESC LIMIT ?`,
   ).bind(nowSec(), limit).all();
   const total = await env.DB.prepare(
-    'SELECT COUNT(DISTINCT telegram_user_id) AS n FROM licenses WHERE telegram_user_id IS NOT NULL',
+    "SELECT COUNT(DISTINCT telegram_user_id) AS n FROM licenses WHERE telegram_user_id IS NOT NULL AND plan != 'trial'",
   ).first();
   const list = rows.results || [];
   if (!list.length) {
@@ -581,7 +607,7 @@ async function cmdBuyers(env, chatId, args) {
   const now = nowSec();
   const lines = [`👥 <b>خریداران — ${total ? total.n : 0} نفر</b> (${list.length} نفرِ برتر):`];
   for (const r of list) {
-    const when = new Date(r.last * 1000).toISOString().slice(0, 10);
+    const when = faDate(r.last);
     lines.push(
       `<a href="tg://user?id=${r.uid}">${r.uid}</a> — ${r.n} خرید • ${r.live} در جریان` +
       (r.banned ? ` • ⛔ ${r.banned} لغو` : '') + ` • آخرین: ${when}`,
@@ -617,25 +643,29 @@ async function cmdList(env, chatId, args) {
   const acc = await env.DB.prepare('SELECT * FROM accounts ORDER BY created_at DESC LIMIT ?').bind(n).all();
   const lines = [];
   for (const r of lic.results || []) {
-    lines.push(`<code>${esc(r.code)}</code> ${esc(r.plan)} ${r.status === 'active' ? '✅' : '⛔'}${r.expires_at ? ' 🕒' : ' ⏳'}`);
+    lines.push(`<code>${esc(r.code)}</code> ${esc(r.plan)} ${r.status === 'active' ? '✅' : '⛔'}${r.expires_at ? ' 🕒' : ' ⏳'} — ${faDate(r.created_at)}`);
   }
   for (const r of acc.results || []) {
-    lines.push(`👤 <code>${esc(r.username)}</code> ${esc(r.plan)} ${r.status === 'active' ? '✅' : '⛔'}${r.expires_at ? ' 🕒' : ' ⏳'}`);
+    lines.push(`👤 <code>${esc(r.username)}</code> ${esc(r.plan)} ${r.status === 'active' ? '✅' : '⛔'}${r.expires_at ? ' 🕒' : ' ⏳'} — ${faDate(r.created_at)}`);
   }
   return send(env, chatId, lines.length ? ['🗒 آخرین‌ها:', '', ...lines].join('\n') : 'خالی است.');
 }
 
 async function giveTrial(env, chatId, tgId) {
-  const prior = await env.DB.prepare(
-    "SELECT code FROM licenses WHERE telegram_user_id = ? AND plan = 'trial' LIMIT 1",
-  ).bind(tgId).first();
-  if (prior) {
-    return send(env, chatId, `🎁 قبلاً کد تست گرفتی: <code>${esc(prior.code)}</code>\nاگر منقضی شده، برای ادامه اشتراک برو سراغ 🛍 خرید.`);
-  }
+  // Atomic one-per-account: the INSERT only lands if no trial row exists yet,
+  // so a double-tap on 🎁 can never mint two codes.
   const code = randomCode();
-  await env.DB.prepare(
-    'INSERT INTO licenses (code, plan, status, duration_days, note, telegram_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-  ).bind(code, 'trial', 'active', 1, 'trial', tgId, nowSec()).run();
+  const ins = await env.DB.prepare(
+    'INSERT INTO licenses (code, plan, status, duration_days, note, telegram_user_id, created_at) '
+    + 'SELECT ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS '
+    + "(SELECT 1 FROM licenses WHERE telegram_user_id = ? AND plan = 'trial')",
+  ).bind(code, 'trial', 'active', 1, `trial:${tgId}`, tgId, nowSec(), tgId).run();
+  if (!ins.meta || !ins.meta.changes) {
+    const prior = await env.DB.prepare(
+      "SELECT code FROM licenses WHERE telegram_user_id = ? AND plan = 'trial' LIMIT 1",
+    ).bind(tgId).first();
+    return send(env, chatId, `🎁 قبلاً کد تست گرفتی: <code>${esc(prior ? prior.code : '')}</code>\nاگر منقضی شده، برای ادامه اشتراک برو سراغ 🛍 خرید.`);
+  }
   return send(env, chatId, [
     '🎁 <b>کد تست ۱ روزهٔ تو:</b>',
     `<code>${esc(code)}</code>`,
@@ -722,7 +752,7 @@ async function handleReceipt(env, msg) {
       await send(env, id, [
         `🧾 <b>رسید پرداخت</b> — ${esc(info.title)} (${esc(info.price)})`,
         `از: ${buyerLine(from)}`,
-        `زمان رسید: <code>${new Date(ts * 1000).toISOString().slice(0, 16).replace('T', ' ')} UTC</code>`,
+        `زمان رسید: <code>${faDateTime(ts)}</code> (تهران)`,
       ].join('\n'), {
         inline_keyboard: [[
           { text: '✅ تأیید و ارسال کد', callback_data: `ok:${from.id}:${pending.plan}:${ts}` },
@@ -751,11 +781,23 @@ async function approveReceipt(env, cb, buyerId, plan, ts) {
     return answerCb(env, cb.id, 'این رسید قبلاً تأیید شده است');
   }
   const code = randomCode();
-  await env.DB.prepare(
-    'INSERT INTO licenses (code, plan, status, duration_days, note, telegram_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-  ).bind(code, plan, 'active', planDays(plan), note, buyerId, nowSec()).run();
+  // Atomic insert keyed on the receipt note: two admins tapping ✅ at the
+  // same instant still mint exactly one code (the second insert is a no-op).
+  const ins = await env.DB.prepare(
+    'INSERT INTO licenses (code, plan, status, duration_days, note, telegram_user_id, created_at) '
+    + 'SELECT ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM licenses WHERE note = ?)',
+  ).bind(code, plan, 'active', planDays(plan), note, buyerId, nowSec(), note).run();
+  if (!ins.meta || !ins.meta.changes) {
+    // Another admin already approved this exact receipt.
+    const row = await env.DB.prepare('SELECT code FROM licenses WHERE note = ?').bind(note).first();
+    await tg(env, 'editMessageText', {
+      chat_id: chatId, message_id: messageId,
+      text: `✅ این رسید قبلاً تأیید شده — کد <code>${esc(row ? row.code : '')}</code> برای خریدار ارسال شد.`,
+    }).catch(() => {});
+    return answerCb(env, cb.id, 'این رسید قبلاً تأیید شده است');
+  }
   await clearPending(env, buyerId);
-  await send(env, buyerId, [
+  const delivered = await send(env, buyerId, [
     '🍯 <b>پرداخت شما تأیید شد!</b>',
     `پلن: <b>${esc(((await getPrices(env))[plan] || {}).title || plan)}</b>`,
     '',
@@ -765,6 +807,15 @@ async function approveReceipt(env, cb, buyerId, plan, ts) {
     'اپ BEE-VPN را باز کن → «کد فعال‌سازی» → کد را وارد کن.',
     '⏱ اشتراک از لحظهٔ اولین فعال‌سازی در اپ شروع می‌شود.',
   ].join('\n'));
+  if (!(delivered && delivered.ok)) {
+    // Buyer probably blocked the bot: the code exists but would be lost —
+    // hand it to the admin instead of claiming it was delivered.
+    await tg(env, 'editMessageText', {
+      chat_id: chatId, message_id: messageId,
+      text: '⚠️ تأیید شد ولی <b>ارسال به خریدار ناموفق بود</b> (احتمالاً ربات را بلاک کرده است).\nکد را خودت دستی برایش بفرست:\n<code>' + esc(code) + '</code>',
+    }).catch(() => {});
+    return answerCb(env, cb.id, 'کد صادر شد — ارسال ناموفق!');
+  }
   await tg(env, 'editMessageText', {
     chat_id: chatId, message_id: messageId,
     text: `✅ تأیید شد — کد <code>${esc(code)}</code> برای خریدار (id <code>${buyerId}</code>) ارسال شد.`,
@@ -811,6 +862,10 @@ export default {
         const chatId = cb.message.chat.id;
         const tgId = cb.from.id;
         const data = cb.data || '';
+        // The bot only lives in private chats — ignore group chatter.
+        if (cb.message.chat.type && cb.message.chat.type !== 'private') {
+          return new Response('ok');
+        }
         if (data === 'menu' || data === 'start') {
           await tg(env, 'editMessageText', {
             chat_id: chatId, message_id: cb.message.message_id, text: WELCOME,
@@ -824,11 +879,16 @@ export default {
           }).catch(async () => send(env, chatId, '🛍 پلن‌ها:', await planKeyboard(env)));
         } else if (data.startsWith('plan:')) {
           const plan = data.slice(5);
-          if (planDays(plan)) await setPending(env, tgId, plan);
+          const prev = await getPending(env, tgId);
+          if (planDays(plan) && (!prev || prev.plan !== plan)) {
+            await setPending(env, tgId, plan);
+            await notifyAdmins(env, `🛒 خریدار ${buyerLine(cb.from)} پلن <b>${esc(((await getPrices(env))[plan] || {}).title || plan)}</b> را انتخاب کرد.\nاسکرین‌شاتش که رسید را با دکمهٔ ✅ تأیید کن — کد خودکار برایش ارسال می‌شود.`);
+          } else if (planDays(plan)) {
+            await setPending(env, tgId, plan);
+          }
           await send(env, chatId, await paymentText(env, plan), {
             inline_keyboard: [[{ text: '🔙 بازگشت', callback_data: 'buy' }]],
           });
-          await notifyAdmins(env, `🛒 خریدار ${buyerLine(cb.from)} پلن <b>${esc(plan)}</b> را انتخاب کرد.\nاسکرین‌شاتش که رسید را با دکمهٔ ✅ تأیید کن — کد خودکار برایش ارسال می‌شود.`);
         } else if (data.startsWith('price:') || data.startsWith('pset:') ||
                    data === 'price_menu' || data === 'reset_ask' || data === 'reset_go') {
           if (!isAdmin(env, cb.from)) {
@@ -865,16 +925,20 @@ export default {
 
       const msg = update.message;
       if (!msg || !msg.from) return new Response('ok');
+      // Groups/channels are out of scope: every flow assumes a private chat.
+      if (msg.chat.type && msg.chat.type !== 'private') return new Response('ok');
       const chatId = msg.chat.id;
       const tgId = msg.from.id;
       const text = (msg.text || '').trim();
 
       if (text.startsWith('/start')) {
         await send(env, chatId, WELCOME, mainMenu(env));
-        // A buyer landing from the app's «خرید اشتراک» button: open the shop
-        // for them instead of making them tap again.
+        // Deep links from the app: ?start=buy opens the shop, ?start=trial
+        // hands out the 1-day code directly.
         if (text.includes('buy')) {
           await send(env, chatId, '🛍 <b>پلن موردنظر را انتخاب کن:</b>', await planKeyboard(env));
+        } else if (text.includes('trial')) {
+          await giveTrial(env, chatId, tgId);
         }
         return new Response('ok');
       }
