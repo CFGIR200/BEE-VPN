@@ -147,7 +147,8 @@ function paymentText(env, plan) {
     '💎 <b>پرداخت تتر (USDT):</b>',
     `<code>${esc(usdt)}</code>`,
     '',
-    '📌 بعد از پرداخت، <b>اسکرین‌شات رسید</b> را برای پشتیبانی بفرست تا کد فعال‌سازی برایت صادر شود.',
+    '📌 بعد از پرداخت، <b>عکسِ رسید را مستقیم و بدون هیچ کامندی همین‌جا بفرست</b> (اسکرین‌شات).',
+    '✅ ادمین تأیید می‌کند و کد فعال‌سازی خودکار برایت ارسال می‌شود.',
     '⏱ اشتراک از لحظهٔ اولین فعال‌سازی در اپ شروع می‌شود، نه از لحظهٔ خرید.',
   ].join('\n');
 }
@@ -370,6 +371,135 @@ async function notifyAdmins(env, text) {
 }
 
 // ---------------------------------------------------------------------------
+// Purchase-by-receipt flow — no commands for the buyer.
+//
+// plan tap -> a pending_receipts row remembers (buyer -> plan) -> the buyer's
+// next photo becomes the receipt for that plan: it rides to every admin
+// untouched (copyMessage) carrying approve/reject buttons; ✅ issues the code
+// and hands it to the buyer directly. The admin never types anything.
+//
+// Idempotency: every receipt carries a timestamp; the issued code is stored
+// with note = "receipt:<ts>:<buyerId>". A second admin tapping ✅ on the same
+// receipt finds that note already in licenses and does nothing — one receipt,
+// exactly one code, no matter how many admins race on the buttons.
+// ---------------------------------------------------------------------------
+
+const PENDING_TTL = 24 * 3600;  // a plan choice expires after a day
+
+async function setPending(env, tgId, plan) {
+  await env.DB.prepare(
+    'INSERT INTO pending_receipts (tg_user_id, plan, ts) VALUES (?, ?, ?) '
+    + 'ON CONFLICT(tg_user_id) DO UPDATE SET plan = excluded.plan, ts = excluded.ts',
+  ).bind(tgId, plan, nowSec()).run();
+}
+
+async function getPending(env, tgId) {
+  const row = await env.DB.prepare(
+    'SELECT plan, ts FROM pending_receipts WHERE tg_user_id = ?',
+  ).bind(tgId).first();
+  if (!row || nowSec() - (row.ts || 0) > PENDING_TTL) return null;
+  return row;
+}
+
+async function clearPending(env, tgId) {
+  await env.DB.prepare('DELETE FROM pending_receipts WHERE tg_user_id = ?').bind(tgId).run();
+}
+
+function buyerLine(from) {
+  const name = esc(from.first_name || '')
+    + (from.last_name ? ' ' + esc(from.last_name) : '');
+  return `<a href="tg://user?id=${from.id}">${name || 'خریدار'}</a> (id <code>${from.id}</code>)`;
+}
+
+/** A buyer photo/document: deliver it untouched to every admin + buttons. */
+async function handleReceipt(env, msg) {
+  const from = msg.from;
+  const pending = await getPending(env, from.id);
+  if (!pending || !planDays(pending.plan)) {
+    return send(env, msg.chat.id,
+      '🧾 برای ارسال رسید، اول پلن موردنظرت را انتخاب کن 👇',
+      planKeyboard(env));
+  }
+  const ts = nowSec();
+  const info = prices(env)[pending.plan] || { title: pending.plan, price: '?' };
+  const ids = String(env.ADMIN_IDS || '').split(',').map((s) => s.trim()).filter(Boolean);
+  for (const id of ids) {
+    const copied = await tg(env, 'copyMessage', {
+      chat_id: id, from_chat_id: msg.chat.id, message_id: msg.message_id,
+    });
+    if (copied && copied.ok) {
+      await send(env, id, [
+        `🧾 <b>رسید پرداخت</b> — ${esc(info.title)} (${esc(info.price)})`,
+        `از: ${buyerLine(from)}`,
+        `زمان رسید: <code>${new Date(ts * 1000).toISOString().slice(0, 16).replace('T', ' ')} UTC</code>`,
+      ].join('\n'), {
+        inline_keyboard: [[
+          { text: '✅ تأیید و ارسال کد', callback_data: `ok:${from.id}:${pending.plan}:${ts}` },
+          { text: '❌ رد', callback_data: `no:${from.id}:${pending.plan}:${ts}` },
+        ]],
+      });
+    }
+  }
+  await send(env, msg.chat.id,
+    '✅ رسید دریافت شد — بعد از تأیید ادمین، کد فعال‌سازی خودکار برایت ارسال می‌شود. 🍯');
+}
+
+/** Admin tapped ✅: issue the code, hand it to the buyer, close the ticket. */
+async function approveReceipt(env, cb, buyerId, plan, ts) {
+  const chatId = cb.message.chat.id;
+  const messageId = cb.message.message_id;
+  const note = `receipt:${ts}:${buyerId}`;
+  const existing = await env.DB.prepare('SELECT code FROM licenses WHERE note = ?')
+    .bind(note).first();
+  if (existing) {
+    // Another admin already approved this exact receipt.
+    await tg(env, 'editMessageText', {
+      chat_id: chatId, message_id: messageId,
+      text: `✅ این رسید قبلاً تأیید شده — کد <code>${esc(existing.code)}</code> برای خریدار ارسال شد.`,
+    }).catch(() => {});
+    return answerCb(env, cb.id, 'این رسید قبلاً تأیید شده است');
+  }
+  const code = randomCode();
+  await env.DB.prepare(
+    'INSERT INTO licenses (code, plan, status, duration_days, note, telegram_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  ).bind(code, plan, 'active', planDays(plan), note, buyerId, nowSec()).run();
+  await clearPending(env, buyerId);
+  await send(env, buyerId, [
+    '🍯 <b>پرداخت شما تأیید شد!</b>',
+    `پلن: <b>${esc((prices(env)[plan] || {}).title || plan)}</b>`,
+    '',
+    '🔑 <b>کد فعال‌سازی تو:</b>',
+    `<code>${esc(code)}</code>`,
+    '',
+    'اپ BEE-VPN را باز کن → «کد فعال‌سازی» → کد را وارد کن.',
+    '⏱ اشتراک از لحظهٔ اولین فعال‌سازی در اپ شروع می‌شود.',
+  ].join('\n'));
+  await tg(env, 'editMessageText', {
+    chat_id: chatId, message_id: messageId,
+    text: `✅ تأیید شد — کد <code>${esc(code)}</code> برای خریدار (id <code>${buyerId}</code>) ارسال شد.`,
+  }).catch(() => {});
+  return answerCb(env, cb.id, 'کد صادر و ارسال شد');
+}
+
+/** Admin tapped ❌: tell the buyer kindly; the plan choice stays active so a
+ *  corrected receipt can be sent right away. */
+async function rejectReceipt(env, cb, buyerId, plan, ts) {
+  const chatId = cb.message.chat.id;
+  const messageId = cb.message.message_id;
+  const support = String(env.SUPPORT_URL || 'https://t.me/Bee_hive_VPN');
+  await tg(env, 'editMessageText', {
+    chat_id: chatId, message_id: messageId,
+    text: '❌ این رسید رد شد.',
+  }).catch(() => {});
+  await send(env, buyerId, [
+    '❌ <b>رسید شما تأیید نشد.</b>',
+    'ممکن است عکس ناخوانا باشد یا پرداخت کامل نشده باشد.',
+    `برای بررسی با پشتیبانی در تماس باش: ${esc(support)}`,
+  ].join('\n'));
+  return answerCb(env, cb.id, 'رسید رد شد');
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -403,10 +533,27 @@ export default {
           }).catch(() => send(env, chatId, '🛍 پلن‌ها:', planKeyboard(env)));
         } else if (data.startsWith('plan:')) {
           const plan = data.slice(5);
+          if (planDays(plan)) await setPending(env, tgId, plan);
           await send(env, chatId, paymentText(env, plan), {
             inline_keyboard: [[{ text: '🔙 بازگشت', callback_data: 'buy' }]],
           });
-          await notifyAdmins(env, `🛒 خریدار: <a href="tg://user?id=${tgId}">${esc(cb.from.first_name || '')}</a> (id <code>${tgId}</code>) پلن <b>${esc(plan)}</b> را انتخاب کرد.\nبعد از تأیید رسید: <code>/gen ${esc(plan)} 1</code>`);
+          await notifyAdmins(env, `🛒 خریدار ${buyerLine(cb.from)} پلن <b>${esc(plan)}</b> را انتخاب کرد.\nاسکرین‌شاتش که رسید را با دکمهٔ ✅ تأیید کن — کد خودکار برایش ارسال می‌شود.`);
+        } else if (data.startsWith('ok:') || data.startsWith('no:')) {
+          if (!isAdmin(env, cb.from)) {
+            await answerCb(env, cb.id, 'فقط ادمین');
+          } else {
+            const parts = data.split(':');
+            const buyerId = parseInt(parts[1], 10);
+            const plan = parts[2] || '';
+            const ts = parseInt(parts[3], 10) || 0;
+            if (!buyerId || !planDays(plan)) {
+              await answerCb(env, cb.id, 'دادهٔ نامعتبر');
+            } else if (parts[0] === 'ok') {
+              await approveReceipt(env, cb, buyerId, plan, ts);
+            } else {
+              await rejectReceipt(env, cb, buyerId, plan, ts);
+            }
+          }
         } else if (data === 'trial') {
           await giveTrial(env, chatId, tgId);
         } else if (data === 'mysub') {
@@ -455,7 +602,8 @@ export default {
         else if (cmd === '/helpadmin') {
           await send(env, chatId, [
             '🛠 <b>فرمان‌های ادمین:</b>',
-            '<code>/gen m3 5 تخفیف دوست</code> — ساخت کد (تا ۵۰)',
+            '🧾 رسید خرید: عکسِ مشتری خودکار برای تو می‌آید — فقط دکمهٔ <b>✅ تأیید و ارسال کد</b> را بزن؛ کد صادر و خودکار برای خریدار ارسال می‌شود (❌ = رد).',
+            '<code>/gen m3 5 تخفیف دوست</code> — ساخت کد دستی (تا ۵۰)',
             '<code>/adduser user pass m1</code> — ساخت حساب',
             '<code>/list 10</code> • <code>/who BEE-…</code>',
             '<code>/revoke …</code> • <code>/unrevoke …</code>',
@@ -466,15 +614,12 @@ export default {
         return new Response('ok');
       }
 
-      // A photo from a regular user is treated as a payment receipt: forward
-      // it to every admin with the buyer attached.
-      if (msg.photo && msg.photo.length) {
-        await notifyAdmins(env, `🧾 رسید از <a href="tg://user?id=${tgId}">${esc(msg.from.first_name || '')}</a> (id <code>${tgId}</code>)`);
-        const firstAdmin = String(env.ADMIN_IDS || '').split(',').map((s) => s.trim()).filter(Boolean)[0];
-        if (firstAdmin) {
-          await tg(env, 'copyMessage', { chat_id: firstAdmin, from_chat_id: chatId, message_id: msg.message_id });
-        }
-        await send(env, chatId, '✅ رسید دریافت شد — ادمین بررسی می‌کند و کد فعال‌سازی را برایت می‌فرستد. 🍯');
+      // A photo (or an image sent as a file) from a regular user IS their
+      // payment receipt — no command needed. It rides to the admins untouched,
+      // tagged with the plan they picked, carrying approve/reject buttons.
+      if ((msg.photo && msg.photo.length)
+          || (msg.document && String(msg.document.mime_type || '').startsWith('image/'))) {
+        await handleReceipt(env, msg);
         return new Response('ok');
       }
 

@@ -43,5 +43,14 @@ CREATE TABLE IF NOT EXISTS attempts (
 );
 CREATE INDEX IF NOT EXISTS idx_attempts_ip_ts ON attempts (ip, ts);
 
+-- The buyer's latest plan choice: their next photo (no command needed)
+-- becomes the payment receipt for that plan. One row per buyer; cleared on
+-- approval (see bot-worker.js "Purchase-by-receipt flow").
+CREATE TABLE IF NOT EXISTS pending_receipts (
+  tg_user_id  INTEGER PRIMARY KEY,
+  plan        TEXT NOT NULL,
+  ts          INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_licenses_tg ON licenses (telegram_user_id);
 CREATE INDEX IF NOT EXISTS idx_accounts_tg ON accounts (telegram_user_id);
