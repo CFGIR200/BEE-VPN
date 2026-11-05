@@ -29,12 +29,17 @@ android {
         applicationId = "app.beevpn"
         minSdk = 26
         targetSdk = 36
-        versionCode = 449
-        versionName = "3.2.0"
+        versionCode = 450
+        versionName = "3.2.1"
         // The encoded CI value is safe in generated Kotlin source. This is still extractable from an APK.
         val relaySecret = System.getenv("BEE_IDENTITY_RELAY_HMAC").orEmpty()
         val relayEncoded = Base64.getEncoder().encodeToString(relaySecret.toByteArray(Charsets.UTF_8))
         buildConfigField("String", "IDENTITY_RELAY_HMAC_B64", "\"$relayEncoded\"")
+        // Identity relay Workers (see RELAY-WORKERS-SETUP-FA.txt). Set BEE_RELAY_A /
+        // BEE_RELAY_B in CI to the two deployed Worker URLs once they exist; the
+        // placeholders below are skipped at runtime while no HMAC secret is set.
+        buildConfigField("String", "BEE_RELAY_A", "\"${System.getenv("BEE_RELAY_A") ?: "https://beevpn-identity-relay-a.beevpn-edge-one.workers.dev"}\"")
+        buildConfigField("String", "BEE_RELAY_B", "\"${System.getenv("BEE_RELAY_B") ?: "https://beevpn-identity-relay-b.beevpn-edge-two.workers.dev"}\"")
 
     }
     buildFeatures { buildConfig = true }

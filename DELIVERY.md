@@ -127,7 +127,7 @@ keytool -genkeypair -v -keystore release.keystore -alias beevpn \
 
 ## خروجی APK محلی (ساخته‌شده در سندباکس)
 
-چهار فایل APK نسخهٔ 3.2.0 (versionCode 449) جدا از CI و به‌صورت محلی بیلد و با keystore تحویلی امضا شده‌اند:
+چهار فایل APK نسخهٔ 3.2.0 (versionCode 449؛ نسخه‌های بعدی از CI با versionCode بالاتر می‌آیند) جدا از CI و به‌صورت محلی بیلد و با keystore تحویلی امضا شده‌اند:
 `BEE-VPN-3.2.0-arm64-v8a.apk` (گوشی‌های جدید) ، `BEE-VPN-3.2.0-armeabi-v7a.apk` (گوشی‌های قدیمی ۳۲بیتی) ،
 `BEE-VPN-3.2.0-x86_64-emulator.apk` (شبیه‌ساز) و `BEE-VPN-3.2.0-universal.apk` (همهٔ معماری‌ها) + `SHA256SUMS.txt`.
 

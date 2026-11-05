@@ -96,10 +96,10 @@ log "5/6  Creating Release $TAG"
 python3 - "$TAG" "$VER" > /tmp/bee_release.json <<'PYEOF'
 import json, sys
 tag, ver = sys.argv[1], sys.argv[2]
-body = f"""BEE-VPN {ver} — نسخهٔ آمادهٔ نصب (versionCode 449)
+body = f"""BEE-VPN {ver} — نسخهٔ آمادهٔ نصب (versionCode 450)
 
 Changes in this version:
-- Same core as upstream BEEHIVE-GUARD 3.2.0 (versionCode 449)
+- Same core as upstream BEEHIVE-GUARD 3.2.0 (versionCode 450)
 - 7 connection modes: WireGuard, MASQUE, WARP-on-WARP (gool), Psiphon, Tor, Foxy, SHARD
 - Bee theme and icons, Persian + English UI
 - Telegram channel and admin contact in the About screen

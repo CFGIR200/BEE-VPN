@@ -4431,7 +4431,10 @@ ConnectionLog.record("MTU: $foxyMtu for FOXY")
             if (!IdentityProvisioner.hasIdentity(this@MsnGuardVpnService, protocol)) {
                 val identity = IdentityRelayClient.provision(this@MsnGuardVpnService, protocol) { stopRequested.get() }
                 if (!identity.success) {
-                    ConnectionLog.record("Chain: $label relay identity unavailable; trying existing core path")
+                    ConnectionLog.record(
+                        "Chain: $label identity provisioning failed (" + identity.error + "); trying existing core path — " +
+                            "if this fails too, open Warp Setting → GET IDENTITY and use the Shard or Plain method"
+                    )
                 }
             }
             val config = CoreConfig.chainOuterJson(this, protocol)
@@ -5036,7 +5039,13 @@ ConnectionLog.record("MTU: $foxyMtu for FOXY")
                     !IdentityProvisioner.hasIdentity(this@MsnGuardVpnService, relayProtocol)) {
                     val outcome = IdentityRelayClient.provision(this@MsnGuardVpnService, relayProtocol) { stopRequested.get() }
                     if (!outcome.success) {
-                        ConnectionLog.record("Identity relay unavailable; trying existing core path")
+                        val haveIdentity = IdentityProvisioner.hasIdentity(this@MsnGuardVpnService, relayProtocol)
+                        ConnectionLog.record(
+                            "Identity provisioning failed (" + outcome.error + "); " +
+                                (if (haveIdentity) "using the identity already stored on the device"
+                                 else "no identity on device — the core will try its own ECH registration next; " +
+                                      "if it cannot register either, open Warp Setting → GET IDENTITY and use the Shard or Plain method, or deploy your own relay (RELAY-WORKERS-SETUP-FA.txt)")
+                        )
                     } else {
                         ConnectionLog.record("Identity relay: $relayProtocol stored")
                     }

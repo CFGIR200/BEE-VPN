@@ -33,8 +33,18 @@ import java.math.BigInteger
 
 /** Worker-only account enrollment. The injected HMAC is an abuse barrier, not anti-clone. */
 object IdentityRelayClient {
-    const val RELAY_A = "https://beevpn-identity-relay-a.beevpn-edge-one.workers.dev"
-    const val RELAY_B = "https://beevpn-identity-relay-b.beevpn-edge-two.workers.dev"
+    // Worker endpoints are build-time configurable: set the BEE_RELAY_A / BEE_RELAY_B
+    // environment variables in CI to point at your own deployed Workers
+    // (see RELAY-WORKERS-SETUP-FA.txt). Defaults below are placeholders that
+    // cannot answer without a deployed Worker behind them.
+    val RELAY_A = BuildConfig.BEE_RELAY_A
+    val RELAY_B = BuildConfig.BEE_RELAY_B
+
+    /** A relay without its HMAC secret can never answer — skip the whole ladder. */
+    val relayConfigured: Boolean = BuildConfig.IDENTITY_RELAY_HMAC_B64.isNotBlank() &&
+        BuildConfig.BEE_RELAY_A.startsWith("https://") &&
+        !BuildConfig.BEE_RELAY_A.contains("beevpn-edge-one")
+
     const val REGISTER_PATH = "/v0a4471/reg"
     const val ENROLL_PATH_PREFIX = "/v0a4471/reg/"
     const val AUTH_TIMESTAMP = "X-BEE-Timestamp"
@@ -99,7 +109,15 @@ object IdentityRelayClient {
             if (IdentityProvisioner.validIdentityFile(file, name.startsWith("masque"))) continue
             var failure = "relay unavailable"
             var text: String? = null
-            for (endpoint in ENDPOINT_LADDER) {
+            if (!relayConfigured) {
+                // No HMAC secret / placeholder Workers: the ladder cannot succeed,
+                // and walking it costs up to ~90 s of dead timeouts per identity
+                // (2 endpoints × 2 attempts × connect+read) before the direct API
+                // is even tried — the report was "stuck on Connecting". Go straight
+                // to the direct registration route.
+                ConnectionLog.record("Identity relay: disabled (no HMAC secret / placeholder Workers) — using direct API")
+            }
+            for (endpoint in ENDPOINT_LADDER.takeIf { relayConfigured } ?: emptyList()) {
                 if (cancelled()) return Outcome(false, "cancelled")
                 try {
                     val hop = enroll(context, endpoint, name.startsWith("masque"))
