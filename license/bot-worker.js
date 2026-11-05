@@ -22,7 +22,7 @@
  */
 
 const PLAN_DAYS = { trial: 1, m1: 30, m3: 90, m6: 182, m12: 365 };
-const PBKDF2_ITERATIONS = 120000;
+const PBKDF2_ITERATIONS = 100000;  // Workers caps PBKDF2 at 100k iterations
 
 const DEFAULT_PRICES = {
   m1:  { title: 'اشتراک یک‌ماهه',            price: '۱۵۰٬۰۰۰ تومان' },

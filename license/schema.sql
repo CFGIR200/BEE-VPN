@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS licenses (
 
 CREATE TABLE IF NOT EXISTS accounts (
   username         TEXT PRIMARY KEY,
-  pass_hash        TEXT NOT NULL,             -- base64 PBKDF2-SHA256, 120k iters
+  pass_hash        TEXT NOT NULL,             -- base64 PBKDF2-SHA256, 100k iters (Workers cap)
   pass_salt        TEXT NOT NULL,             -- base64, 16 bytes
   plan             TEXT NOT NULL DEFAULT 'm1',
   status           TEXT NOT NULL DEFAULT 'active',

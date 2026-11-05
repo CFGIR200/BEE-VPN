@@ -19,4 +19,4 @@ LICENSE_ED25519_PUB_B64 = "S-H-4JCuQ3c_Asf4JDJTHoWLePvEQV14Bxcy7N2WORU"
 [[d1_databases]]
 binding = "DB"
 database_name = "beevpn-license"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "abd67a5d-30d3-4669-8107-67684868b849"

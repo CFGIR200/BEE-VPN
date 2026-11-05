@@ -21,4 +21,4 @@ PRICES_JSON = '{"m1":{"title":"اشتراک یک‌ماهه","price":"۱۵۰٬۰
 [[d1_databases]]
 binding = "DB"
 database_name = "beevpn-license"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "abd67a5d-30d3-4669-8107-67684868b849"
