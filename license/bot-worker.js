@@ -8,7 +8,7 @@
  *     it into the chat. No payment gateway needed on day one.
  *   - trial: hands out exactly one 1-day code per Telegram account.
  *   - admin: /gen /adduser /list /who /revoke /unrevoke /extend /reset
- *            /stats /buyers /price
+ *            /stats /buyers /price /diag
  *
  * Webhook setup (once, after deploy):
  *   curl "https://api.telegram.org/bot$BOT_TOKEN/setWebhook" \
@@ -732,11 +732,22 @@ function buyerLine(from) {
   return `<a href="tg://user?id=${from.id}">${name || 'خریدار'}</a> (id <code>${from.id}</code>)`;
 }
 
-/** A buyer photo/document: deliver it untouched to every admin + buttons. */
+function receiptButtons(buyerId, plan, ts) {
+  return { inline_keyboard: [[
+    { text: '✅ تأیید و ارسال کد', callback_data: `ok:${buyerId}:${plan}:${ts}` },
+    { text: '❌ رد', callback_data: `no:${buyerId}:${plan}:${ts}` },
+  ]] };
+}
+
+/** A buyer photo/document: deliver it untouched to every admin + buttons.
+ *  Works for admins too (they test the flow / buy for someone). Never claims
+ *  success silently: if no admin actually received it, the buyer is told so
+ *  and the reason lands in the Worker logs (wrangler tail). */
 async function handleReceipt(env, msg) {
   const from = msg.from;
   const pending = await getPending(env, from.id);
   if (!pending || !planDays(pending.plan)) {
+    await clearPending(env, from.id);  // sweep missing/expired row (getPending already rejects stale ones)
     return send(env, msg.chat.id,
       '🧾 برای ارسال رسید، اول پلن موردنظرت را انتخاب کن 👇',
       await planKeyboard(env));
@@ -744,25 +755,113 @@ async function handleReceipt(env, msg) {
   const ts = nowSec();
   const info = (await getPrices(env))[pending.plan] || { title: pending.plan, price: '?' };
   const ids = String(env.ADMIN_IDS || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (!ids.length) {
+    console.error('receipt: ADMIN_IDS is empty — buyer receipt has nowhere to go');
+    return send(env, msg.chat.id, [
+      '⚠️ <b>ارسال رسید ناموفق بود.</b>',
+      `لطفاً مستقیم به پشتیبانی پیام بده: ${esc(String(env.SUPPORT_URL || 'https://t.me/Bee_hive_VPN'))}`,
+    ].join('\n'));
+  }
+  let delivered = 0;
+  const errors = [];
   for (const id of ids) {
-    const copied = await tg(env, 'copyMessage', {
-      chat_id: id, from_chat_id: msg.chat.id, message_id: msg.message_id,
-    });
-    if (copied && copied.ok) {
-      await send(env, id, [
-        `🧾 <b>رسید پرداخت</b> — ${esc(info.title)} (${esc(info.price)})`,
-        `از: ${buyerLine(from)}`,
-        `زمان رسید: <code>${faDateTime(ts)}</code> (تهران)`,
-      ].join('\n'), {
-        inline_keyboard: [[
-          { text: '✅ تأیید و ارسال کد', callback_data: `ok:${from.id}:${pending.plan}:${ts}` },
-          { text: '❌ رد', callback_data: `no:${from.id}:${pending.plan}:${ts}` },
-        ]],
+    try {
+      const copied = await tg(env, 'copyMessage', {
+        chat_id: id, from_chat_id: msg.chat.id, message_id: msg.message_id,
       });
+      if (copied && copied.ok) {
+        delivered++;
+        const cap = await send(env, id, [
+          `🧾 <b>رسید پرداخت</b> — ${esc(info.title)} (${esc(info.price)})`,
+          `از: ${buyerLine(from)}`,
+          `زمان رسید: <code>${faDateTime(ts)}</code> (تهران)`,
+        ].join('\n'), receiptButtons(from.id, pending.plan, ts));
+        if (!(cap && cap.ok)) {
+          // Photo arrived but the approve buttons did not — bolt them onto
+          // the copied photo itself, otherwise the receipt is un-approvable.
+          const fixed = await tg(env, 'editMessageCaption', {
+            chat_id: id, message_id: copied.result.message_id,
+            caption: `🧾 رسید ${esc(info.title)} از ${esc(from.first_name || 'خریدار')} (id ${from.id})`,
+            parse_mode: 'HTML',
+            reply_markup: receiptButtons(from.id, pending.plan, ts),
+          });
+          if (!(fixed && fixed.ok)) {
+            errors.push(`buttons:${id}:${(fixed && fixed.description) || '؟'}`);
+            console.error(`receipt: caption fallback for ${id} failed:`, fixed);
+          }
+        }
+      } else {
+        const why = (copied && copied.description) || 'نامشخص';
+        errors.push(`copy:${id}:${why}`);
+        console.error(`receipt: copyMessage to admin ${id} failed: ${why}`);
+      }
+    } catch (e) {
+      errors.push(`copy:${id}:${String(e.message || e)}`);
+      console.error('receipt: copyMessage threw:', e);
     }
   }
-  await send(env, msg.chat.id,
+  if (!delivered) {
+    console.error('receipt: NO admin received the receipt —', errors.join(' | '));
+    return send(env, msg.chat.id, [
+      '⚠️ <b>ارسال رسید ناموفق بود.</b>',
+      'احتمالاً ادمین ربات را استارت نکرده یا ربات بلاک شده است.',
+      `لطفاً مستقیم به پشتیبانی پیام بده: ${esc(String(env.SUPPORT_URL || 'https://t.me/Bee_hive_VPN'))}`,
+    ].join('\n'));
+  }
+  return send(env, msg.chat.id,
     '✅ رسید دریافت شد — بعد از تأیید ادمین، کد فعال‌سازی خودکار برایت ارسال می‌شود. 🍯');
+}
+
+/** /diag — «چرا چیزی نمی‌آید؟» یک فرمان، کل زنجیره را لاپوشانی می‌کند:
+ *  پیکربندی، خودِ ربات، سلامت وب‌هوک از زبان تلگرام، قابل‌ارسال‌بودن هر ادمین،
+ *  و صف رسیدهای در انتظار. مقادیر محرمانه هرگز نشان داده نمی‌شوند. */
+async function cmdDiag(env, chatId) {
+  const lines = ['🩺 <b>وضعیت ربات BEE-VPN</b>', ''];
+  lines.push('🔐 پیکربندی: ' + [
+    ['BOT_TOKEN', env.BOT_TOKEN], ['WEBHOOK_SECRET', env.WEBHOOK_SECRET],
+    ['ADMIN_IDS', env.ADMIN_IDS], ['CARD_INFO', env.CARD_INFO], ['USDT_INFO', env.USDT_INFO],
+  ].map(([k, v]) => `${k} ${v ? '✅' : '❌'}`).join(' — '));
+  const me = await tg(env, 'getMe', {});
+  lines.push(me && me.ok
+    ? `🤖 ربات: @${esc(me.result.username)}`
+    : '🤖 ربات: ❌ BOT_TOKEN پاسخ نمی‌دهد');
+  const wh = await tg(env, 'getWebhookInfo', {});
+  if (wh && wh.ok) {
+    const r = wh.result;
+    lines.push(`🔗 وب‌هوک: ${r.url ? '✅ تنظیم است' : '❌ تنظیم نشده — setWebhook را بزن'} — در صف: ${r.pending_update_count || 0}`);
+    if (r.last_error_message) {
+      lines.push(`⚠️ آخرین خطای وب‌هوک: ${esc(r.last_error_message)}${r.last_error_date ? ` (${faDateTime(r.last_error_date)})` : ''}`);
+    }
+  } else {
+    lines.push('🔗 وب‌هوک: ❌ بررسی ناموفق');
+  }
+  const ids = String(env.ADMIN_IDS || '').split(',').map((s) => s.trim()).filter(Boolean);
+  lines.push('');
+  if (!ids.length) {
+    lines.push('📣 ادمین: ❌ ADMIN_IDS خالی است — رسید کسی به کسی نمی‌رسد!');
+  }
+  for (const id of ids) {
+    const r = await tg(env, 'sendMessage', {
+      chat_id: id, text: '🩺 تست ارسال از /diag', disable_notification: true,
+    });
+    lines.push(r && r.ok
+      ? `📣 ادمین <code>${id}</code>: دریافت پیام ✅`
+      : `📣 ادمین <code>${id}</code>: ❌ ${(r && r.description) || 'نامشخص'} — ربات باید یک‌بار <b>استارت</b> شود (یا آن‌بلاک شود)`);
+  }
+  try {
+    const pend = await env.DB.prepare('SELECT tg_user_id, plan, ts FROM pending_receipts').all();
+    const now = nowSec();
+    const rows = (pend.results || []).map((r) =>
+      `• <code>${r.tg_user_id}</code> → ${esc(r.plan)} — ${Math.max(0, Math.round((now - r.ts) / 60))} دقیقه پیش${now - r.ts > 86400 ? ' (منقضی)' : ''}`);
+    lines.push('', rows.length
+      ? `🧾 رسیدهای در انتظار: ${rows.length}\n${rows.join('\n')}`
+      : '🧾 رسید در انتظاری نیست');
+  } catch (_) { lines.push('', '🧾 جدول pending_receipts در دسترس نیست ❌'); }
+  try {
+    const n = await env.DB.prepare('SELECT COUNT(*) AS n FROM licenses').first();
+    lines.push(`🗄 دیتابیس: ✅ (${n ? n.n : 0} کد)`);
+  } catch (_) { lines.push('🗄 دیتابیس: ❌'); }
+  return send(env, chatId, lines.join('\n'));
 }
 
 /** Admin tapped ✅: issue the code, hand it to the buyer, close the ticket. */
@@ -948,6 +1047,16 @@ export default {
         return new Response('ok');
       }
 
+      // A photo (or an image sent as a file) IS the payment receipt — no
+      // command needed. This runs BEFORE the admin branch on purpose: when the
+      // admin tests the flow (or buys for someone), their photo used to fall
+      // into the command dispatcher and vanish silently — nothing to anyone.
+      if ((msg.photo && msg.photo.length)
+          || (msg.document && String(msg.document.mime_type || '').startsWith('image/'))) {
+        await handleReceipt(env, msg);
+        return new Response('ok');
+      }
+
       if (isAdmin(env, msg.from)) {
         // A pending /price edit: the admin's next plain message IS the new price.
         if (!text.startsWith('/')) {
@@ -972,6 +1081,7 @@ export default {
         else if (cmd === '/extend') await cmdExtend(env, chatId, args);
         else if (cmd === '/reset') await cmdReset(env, chatId, args);
         else if (cmd === '/stats') await cmdStats(env, chatId);
+        else if (cmd === '/diag') await cmdDiag(env, chatId);
         else if (cmd === '/cancel') {
           await clearAdminState(env, msg.from.id);
           await send(env, chatId, '↩️ لغو شد.');
@@ -989,24 +1099,27 @@ export default {
             '<code>/buyers</code> — لیست خریداران با تعداد خرید',
             '<code>/who 123456789</code> — تاریخچهٔ کامل یک خریدار',
             '<code>/price</code> — پنل دکمه‌ای قیمت‌ها: پلن را بزن، قیمت آماده انتخاب کن یا قیمت دلخواه تایپ کن',
+            '<code>/diag</code> — عیب‌یابی: وب‌هوک، قابل‌ارسال‌بودن ادمین‌ها، رسیدهای در انتظار',
           ].join('\n'));
         }
         return new Response('ok');
       }
 
-      // A photo (or an image sent as a file) from a regular user IS their
-      // payment receipt — no command needed. It rides to the admins untouched,
-      // tagged with the plan they picked, carrying approve/reject buttons.
-      if ((msg.photo && msg.photo.length)
-          || (msg.document && String(msg.document.mime_type || '').startsWith('image/'))) {
-        await handleReceipt(env, msg);
+      // Buyer sent something that is not a photo: if they are mid-purchase,
+      // tell them exactly what is expected instead of the generic menu.
+      const pend = await getPending(env, tgId);
+      if (pend && planDays(pend.plan) && !text.startsWith('/')) {
+        await send(env, chatId, [
+          '📸 رسید باید به شکل <b>عکس (اسکرین‌شات)</b> باشد — همین‌جا بفرستش، بدون کامند.',
+          'پلن انتخاب‌شدهٔ تو:', `<b>${esc(((await getPrices(env))[pend.plan] || {}).title || pend.plan)}</b>`,
+        ].join('\n'));
         return new Response('ok');
       }
-
       // Any other text from a regular user: nudge them to the menu.
       await send(env, chatId, 'برای شروع از منوی زیر استفاده کن 👇', mainMenu(env));
       return new Response('ok');
     } catch (e) {
+      console.error('webhook handler error:', e);
       try { await send(env, update.message?.chat?.id || update.callback_query?.message?.chat?.id, `⚠️ خطا: ${esc(String(e.message || e))}`); } catch (_) {}
       return new Response('ok');
     }
