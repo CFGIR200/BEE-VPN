@@ -697,7 +697,7 @@ class MainActivity : Activity() {
         // now a thin signal trace that idles flat and grey, and ripples in the
         // connected accent once traffic is flowing. One 48-point path repainted at
         // 20fps only while connected — no bitmaps, no extra APK weight.
-        footerWave = OrbitFooterWave(this, palette, Strings.t("SECURED BY MSN-GUARD"))
+        footerWave = OrbitFooterWave(this, palette, Strings.t("SECURED BY BEE-VPN"))
         statusLed = View(this).apply {
             background = Sculpt.sculptedBackground(
                 resources.displayMetrics.density,
@@ -1457,7 +1457,7 @@ class MainActivity : Activity() {
             rightMargin = dp(8)
         }
         addView(statusLed, statusLed.layoutParams)
-        addView(label(Strings.t("MSN-GUARD"), 13f, MUTED, TypefaceStyle.MEDIUM).apply {
+        addView(label(Strings.t("BEE-VPN"), 13f, MUTED, TypefaceStyle.MEDIUM).apply {
             letterSpacing = spacing(0.14f)
         })
         addView(label(appVersion(), 11f, MUTED).apply {
@@ -2501,7 +2501,7 @@ class MainActivity : Activity() {
             .toList()
         val app = fromDisk?.takeIf { it.isNotBlank() } ?: ConnectionLog.snapshot().joinToString("\n")
         return buildString {
-            append("MSN-GUARD ")
+            append("BEE-VPN ")
             append(appVersionOrNull() ?: "?")
             append(" · ")
             append(selectedProtocol.label)
@@ -2541,7 +2541,7 @@ class MainActivity : Activity() {
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 val clipboard = getSystemService(ClipboardManager::class.java)
-                clipboard?.setPrimaryClip(ClipData.newPlainText(Strings.t("MSN-GUARD log"), text))
+                clipboard?.setPrimaryClip(ClipData.newPlainText(Strings.t("BEE-VPN log"), text))
                 // Always confirm, on every Android version. Android 13+ shows its
                 // own clipboard chip, so this is briefly a duplicate there — but a
                 // silent COPY on a long log is indistinguishable from a broken
@@ -2566,7 +2566,7 @@ class MainActivity : Activity() {
         Thread({
             val result = runCatching {
                 val dir = File(cacheDir, "logs").apply { mkdirs() }
-                val target = File(dir, "msn-guard-log.txt")
+                val target = File(dir, "beevpn-log.txt")
                 target.writeText(plainExport())
                 target
             }
@@ -2580,7 +2580,7 @@ class MainActivity : Activity() {
                         Intent.createChooser(
                             Intent(Intent.ACTION_SEND)
                                 .setType("text/plain")
-                                .putExtra(Intent.EXTRA_SUBJECT, "MSN-GUARD log")
+                                .putExtra(Intent.EXTRA_SUBJECT, "BEE-VPN log")
                                 .putExtra(Intent.EXTRA_STREAM, uri)
                                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
                             Strings.t("Share log"),
@@ -2614,7 +2614,7 @@ class MainActivity : Activity() {
                         Intent.createChooser(
                             Intent(Intent.ACTION_SEND)
                                 .setType("text/plain")
-                                .putExtra(Intent.EXTRA_SUBJECT, "MSN-GUARD Log Key")
+                                .putExtra(Intent.EXTRA_SUBJECT, "BEE-VPN Log Key")
                                 .putExtra(Intent.EXTRA_STREAM, uri)
                                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
                             Strings.t("Log Key"),
@@ -3165,7 +3165,7 @@ class MainActivity : Activity() {
             ViewGroup.LayoutParams.WRAP_CONTENT,
         ).apply { bottomMargin = dp(8) })
 
-        content.addView(label(Strings.t("Choose how MSN-GUARD connects"), 14f, MUTED), LinearLayout.LayoutParams(
+        content.addView(label(Strings.t("Choose how BEE-VPN connects"), 14f, MUTED), LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
         ).apply { leftMargin = dp(4); bottomMargin = dp(24) })
@@ -3428,7 +3428,7 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply { topMargin = dp(8) })
             // FOXY — one row like Warp Setting; the dedicated page owns the
-            // Firefox Accounts browser sign-in; MSN never collects the password or code.
+            // Firefox Accounts browser sign-in; BEE-VPN never collects the password or code.
             body.addView(navRow(Strings.t("Foxy Account & Setting"), foxyAccountSummary()) { openFoxySettingScreen() }, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -3974,7 +3974,7 @@ class MainActivity : Activity() {
                 setPadding(0, dp(22), 0, 0)
             })
             // AGPL-3.0 attribution: the fork must credit the upstream project.
-            body.addView(label(Strings.t("Based on MSN-GUARD - AGPL-3.0"), 10.5f, Sculpt.withAlpha(MUTED, 0.55f)).apply {
+            body.addView(label(Strings.t("Licensed under GNU AGPL-3.0"), 10.5f, Sculpt.withAlpha(MUTED, 0.55f)).apply {
                 gravity = Gravity.CENTER_HORIZONTAL
                 letterSpacing = spacing(0.04f)
                 setPadding(0, dp(4), 0, 0)
@@ -5275,7 +5275,7 @@ class MainActivity : Activity() {
         }
         showChoiceSheet(
             title = Strings.t("Tunnel type"),
-            subtitle = Strings.t("How MSN-GUARD carries your traffic"),
+            subtitle = Strings.t("How BEE-VPN carries your traffic"),
             options = listOf(CoreConfig.TUNNEL_MODE_VPN, CoreConfig.TUNNEL_MODE_PROXY),
             selected = CoreConfig.tunnelMode(this),
             label = { if (it == CoreConfig.TUNNEL_MODE_VPN) Strings.t("VPN (whole device)") else Strings.t("SOCKS proxy") },
@@ -6156,7 +6156,7 @@ class MainActivity : Activity() {
             addView(createHeaderBackButton { closeTrafficMonitorScreen() }, LinearLayout.LayoutParams(dp(48), dp(48)))
             addView(label(Strings.t("Traffic monitor"), 22f, INK, TypefaceStyle.MEDIUM).apply { setPadding(dp(4), 0, 0, 0) })
         })
-        content.addView(label(Strings.t("Traffic carried by MSN-GUARD. Per-app attribution is not available from encrypted tunnel counters."), 14f, MUTED), LinearLayout.LayoutParams(
+        content.addView(label(Strings.t("Traffic carried by BEE-VPN. Per-app attribution is not available from encrypted tunnel counters."), 14f, MUTED), LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
         ).apply { leftMargin = dp(4); bottomMargin = dp(24) })
@@ -7463,7 +7463,7 @@ class MainActivity : Activity() {
             }, LinearLayout.LayoutParams(dp(88), dp(40)).apply { marginEnd = dp(4) })
         }
         content.addView(header)
-        content.addView(label(Strings.t("Choose which apps use MSN-GUARD. Changes apply next connection."), 14f, MUTED), LinearLayout.LayoutParams(
+        content.addView(label(Strings.t("Choose which apps use BEE-VPN. Changes apply next connection."), 14f, MUTED), LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
         ).apply { leftMargin = dp(48); topMargin = dp(-8); bottomMargin = dp(20) })
@@ -8116,10 +8116,10 @@ class MainActivity : Activity() {
         accountCard.addView(foxySectionHead("\uD83E\uDD8A " + Strings.t("Foxy Account")))
 
         // Firefox Accounts authentication is completed in the embedded browser.
-        // MSN does not collect or store the Firefox email, password, or OTP.
+        // BEE-VPN does not collect or store the Firefox email, password, or OTP.
         accountCard.addView(label(
             Strings.t(
-                "Sign in through Firefox Accounts in the browser window. Create or use your Firefox account there, complete any email or security verification, then return to MSN. Your password and verification code never enter MSN."
+                "Sign in through Firefox Accounts in the browser window. Create or use your Firefox account there, complete any email or security verification, then return to BEE-VPN. Your password and verification code never enter BEE-VPN."
             ),
             13f, foxyC(0xFFB9B9C7, 0xFF54606A),
         ), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
@@ -8183,7 +8183,7 @@ class MainActivity : Activity() {
         val hint = label("", 11f, MUTED).apply { setPadding(dp(2), dp(12), dp(2), 0) }
         hint.text = when (pending) {
             "active" -> Strings.t("You are signed in — traffic uses the Fastly edge. Sign Out clears the stored tokens.")
-            else -> Strings.t("Firefox Accounts handles email verification and security checks in the browser. Return to MSN after sign-in.")
+            else -> Strings.t("Firefox Accounts handles email verification and security checks in the browser. Return to BEE-VPN after sign-in.")
         }
         accountCard.addView(hint)
 
@@ -9747,7 +9747,7 @@ class MainActivity : Activity() {
         val settings = SplitTunnelSettings(this)
         val count = settings.packages().size
         return when (settings.mode()) {
-            SplitTunnelSettings.Mode.ALL -> Strings.t("All apps use MSN-GUARD")
+            SplitTunnelSettings.Mode.ALL -> Strings.t("All apps use BEE-VPN")
             SplitTunnelSettings.Mode.INCLUDE ->
                 if (count == 1) Strings.t("Only 1 selected app")
                 else Strings.tf("Only %s selected apps", count)

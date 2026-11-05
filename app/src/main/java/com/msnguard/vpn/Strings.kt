@@ -276,10 +276,10 @@ object Strings {
         // Fork attribution (AGPL-3.0): shown as a muted line under the version
         // label in Settings > ABOUT. The upstream name stays on purpose - the
         // license requires crediting the original project.
-        "Based on MSN-GUARD - AGPL-3.0" to Triple(
-            "Based on MSN-GUARD - AGPL-3.0",
-            "بر پایه MSN-GUARD - AGPL-3.0",
-            "Based on MSN-GUARD - AGPL-3.0",
+        "Licensed under GNU AGPL-3.0" to Triple(
+            "Licensed under GNU AGPL-3.0",
+            "منتشرشده تحت پروانهٔ GNU AGPL-3.0",
+            "Licensed under GNU AGPL-3.0",
         ),
         // BEE-VPN contact entries (Settings > ABOUT): the fork's own channels.
         "Telegram Channel" to Triple("Telegram Channel", "کانال تلگرام", "Telegram Channel"),

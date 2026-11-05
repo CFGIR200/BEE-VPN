@@ -103,7 +103,7 @@ object NativeCore {
      * dial re-enters the tunnel it is serving and loops back (`Connection
      * refused` for the API, `no clean endpoint found` for every scan
      * candidate). PattNG never dials direct — it chains aether through a
-     * loopback socks5 proxy, and loopback is exempt by being loopback; MSN
+     * loopback socks5 proxy, and loopback is exempt by being loopback; BEE-VPN
      * runs the engine in-process, so the exemption must come from protect().
      * No-op when no TUN is up: protectSocket() returns true then anyway.
      */

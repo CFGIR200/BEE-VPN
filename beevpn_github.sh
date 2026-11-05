@@ -60,7 +60,7 @@ log "2/6  Creating repository $OWNER/$REPO (skipped if it exists)"
 # ---------------------------------------------------------------------------
 CODE=$(curl -s -o /tmp/bee_repo.json -w '%{http_code}' -H "$AUTH" \
   -H "Accept: application/vnd.github+json" -X POST "$API/user/repos" \
-  -d "{\"name\":\"$REPO\",\"description\":\"BEE-VPN - honey-themed VPN client (based on MSN-GUARD, AGPL-3.0)\",\"has_issues\":true,\"private\":false}")
+  -d "{\"name\":\"$REPO\",\"description\":\"BEE-VPN - honey-themed VPN client (AGPL-3.0)\",\"has_issues\":true,\"private\":false}")
 case "$CODE" in
   201) echo "repository created" ;;
   422) echo "repository already exists - continuing" ;;
@@ -78,7 +78,7 @@ fi
 git config user.name  "${GIT_AUTHOR_NAME:-CFGIR200}"
 git config user.email "${GIT_AUTHOR_EMAIL:-CFGIR200@users.noreply.github.com}"
 git add -A
-git commit -q --allow-empty -m "BEE-VPN $VER: full rebrand of MSN-GUARD 3.2.0 (bee theme, app.beevpn, fa+en)"
+git commit -q --allow-empty -m "BEE-VPN $VER: bee theme, app.beevpn, fa+en, GitHub release pipeline"
 PUSH_URL="https://x-access-token:${GH_TOKEN}@github.com/${OWNER}/${REPO}.git"
 git push -q "$PUSH_URL" "+HEAD:refs/heads/$BRANCH"
 echo "source pushed: https://github.com/$OWNER/$REPO/tree/$BRANCH"
@@ -99,7 +99,7 @@ tag, ver = sys.argv[1], sys.argv[2]
 body = f"""BEE-VPN {ver} — نسخهٔ آمادهٔ نصب (versionCode 449)
 
 Changes in this version:
-- Same core as upstream MSN-GUARD 3.2.0 (versionCode 449)
+- Core updated (versionCode 449)
 - 7 connection modes: WireGuard, MASQUE, WARP-on-WARP (gool), Psiphon, Tor, Foxy, SHARD
 - Bee theme and icons, Persian + English UI
 - Telegram channel and admin contact in the About screen

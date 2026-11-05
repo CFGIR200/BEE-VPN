@@ -396,7 +396,7 @@ object CoreConfig {
         // Obfuscation (aethernoize). off/light/balanced/aggressive/firewall/gfw;
         // the engine defaults wireguard to "firewall" and masque to "balanced".
         // PattNG parity: MASQUE over H2 takes no obfuscation at all (UDP-only).
-        // MSN hardcodes masque to H2, so skip NOIZE for masque/mim.
+        // The core hardcodes masque to H2, so skip NOIZE for masque/mim.
         if (!isMasqueForEnv) {
             text("obfuscation_profile").ifBlank { "balanced" }.let {
                 out["AETHER_NOIZE"] = it
@@ -1264,7 +1264,7 @@ object CoreConfig {
     fun portRejection(port: Int): String? = when {
         port < 1024 -> "Ports below 1024 need root"
         port > 65535 -> "Highest port is 65535"
-        port in RESERVED_PORTS -> "$port is used internally by MSN-GUARD"
+        port in RESERVED_PORTS -> "$port is used internally by BEE-VPN"
         else -> null
     }
 

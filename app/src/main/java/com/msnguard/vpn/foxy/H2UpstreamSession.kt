@@ -644,7 +644,7 @@ class H2UpstreamSession(
             // infinite recursion, StackOverflowError on the FIRST client byte
             // relayed. That is exactly the alpha38 death "pb: <hash> —
             // connection closed". The reference project returns the raw
-            // streams with no wrappers; these counters are MSN's traffic-tile
+            // streams with no wrappers; these counters are BEE-VPN's traffic-tile
             // counters only, so they move into the netty stream classes.
             return TunneledStream(
                 input = streamInput,

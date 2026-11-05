@@ -32,7 +32,7 @@ object Tun2SocksManager {
      * SHARD's TUN MTU — identical to [VPN_INTERFACE_MTU].
      *
      * PattNG parity: this transport is PattNG's VLESS/Reality core
-     * (msn calls it SHARD). PattNG uses one MTU for every method:
+     * (BEE-VPN calls it SHARD). PattNG uses one MTU for every method:
      * AppConfig.VPN_MTU = 1500, SettingsManager.getVpnMtu() defaults to it,
      * CoreVpnService.builder.setMtu(getVpnMtu()) and TProxyService
      * tunnel.mtu = getVpnMtu(). The previous 512 was a WebSocket *payload*

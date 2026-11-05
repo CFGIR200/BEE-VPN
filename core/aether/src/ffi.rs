@@ -45,7 +45,7 @@ pub extern "C" fn aether_set_log_sink(callback: Option<extern "C" fn(*const c_ch
 /// the host establishes, or every dial loops back into the tunnel
 /// (`Connection refused` for the API and for every scan candidate). PattNG
 /// never dials direct: it chains aether through a loopback socks5 proxy that
-/// is exempt by being loopback; MSN runs the engine in-process, so the
+/// is exempt by being loopback; BEE-VPN runs the engine in-process, so the
 /// exemption has to come from protect() instead. Call before start.
 #[no_mangle]
 pub extern "C" fn aether_set_socket_protector(protector: Option<crate::platform::SocketProtector>) {

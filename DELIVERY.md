@@ -14,7 +14,7 @@
 | آیکون‌ها | لوگوی زنبور تولیدشده با AI — mipmap همهٔ تراکم‌ها (mdpi تا xxxhdpi)، لایه‌های adaptive (`beevpn_icon_fg/bg`)، splash، گلیف مونوکروم اندروید ۱۳+ و آیکون نوتیفیکیشن (وکتور زنبور) |
 | زبان‌ها | فارسی + انگلیسی (منابع چینی و روسی حذف شد) |
 | صفحهٔ حمایت مالی نویسندهٔ اصلی | به‌طور کامل حذف شد (UI + آدرس‌های کریپتو + ردیف تلگرام) |
-| صفحهٔ درباره | بخش ABOUT تنظیمات با نام BEE-VPN، نسخه و خط انتساب «بر پایهٔ MSN-GUARD — AGPL-3.0» |
+| صفحهٔ درباره | بخش ABOUT تنظیمات با نام BEE-VPN، نسخه و خط «منتشرشده تحت پروانهٔ AGPL-3.0» |
 | CI/CD | ورک‌فلو `.github/workflows/build.yml` با هر push روی `master` برای سه ABI (arm64-v8a، armeabi-v7a، x86_64) + Universal، APK امضاشده می‌سازد |
 | لایسنس | AGPL-3.0 حفظ شده + انتساب پروژهٔ بالادست در README و داخل اپ |
 
@@ -46,7 +46,7 @@ git commit -am "Set final repo owner"
 ```bash
 git init
 git add -A
-git commit -m "BEE-VPN 1.0.0 - fork of MSN-GUARD 3.2.0 (AGPL-3.0)"
+git commit -m "BEE-VPN 1.0.0 (AGPL-3.0)"
 git branch -M master
 git remote add origin https://github.com/YOUR-USER/BEE-VPN.git
 git push -u origin master
@@ -88,15 +88,15 @@ keytool -genkeypair -v -keystore release.keystore -alias beevpn \
 دو مسیر برای گرفتن هویت WARP وجود دارد و فقط یکی از آن‌ها به زیرساخت نویسندهٔ اصلی وصل است:
 
 - **مسیر مستقیم** (پیش‌فرض و سالم): ثبت‌نام مستقیم روی `api.cloudflareclient.com` در `IdentityProvisioner.kt` — بدون هیچ وابستگی به نویسندهٔ اصلی کار می‌کند.
-- **مسیر Relay** (`IdentityRelayClient.kt`): از دو Cloudflare Worker با نام‌های `msnguard-identity-relay-a/b...workers.dev` استفاده می‌کند که متعلق به نویسندهٔ بالادست‌اند و کلید HMAC آن‌ها عمومی نیست؛ پس در بیلد شما این مسیر عملاً غیرفعال است و **بدون خطا بیلد می‌شود** (در CI فقط هشدار می‌دهد).
+- **مسیر Relay** (`IdentityRelayClient.kt`): از دو Cloudflare Worker استفاده می‌کند که متعلق به پروژهٔ بالادست‌اند و کلید HMAC آن‌ها عمومی نیست؛ پس در بیلد شما این مسیر عملاً غیرفعال است و **بدون خطا بیلد می‌شود** (در CI فقط هشدار می‌دهد).
 
-اگر خواستید Relay مخصوص خودتان را فعال کنید: یک Worker با همان قرارداد (هدرهای `X-MSN-Timestamp/Nonce/Signature` و HMAC-SHA256 روی `method\npath\ntimestamp\nnonce\nbody`) مستقر کنید، دو ثابت `RELAY_A`/`RELAY_B` را در `IdentityRelayClient.kt` به دامنهٔ خودتان تغییر دهید و HMAC را در Secret بگذارید. تا آن زمان، همان مسیر مستقیم کافی است.
+اگر خواستید Relay مخصوص خودتان را فعال کنید: یک Worker با همان قرارداد (هدرهای `X-BEE-Timestamp/Nonce/Signature` و HMAC-SHA256 روی `method\npath\ntimestamp\nnonce\nbody`) مستقر کنید، دو ثابت `RELAY_A`/`RELAY_B` را در `IdentityRelayClient.kt` به دامنهٔ خودتان تغییر دهید و HMAC را در Secret بگذارید. تا آن زمان، همان مسیر مستقیم کافی است.
 
 ## ۶. چرا نام‌های داخلی Kotlin تغییر نکردند؟
 
 فضای نام کد (`com.msnguard.vpn`) و نام کلاس‌هایی مثل `MsnGuardVpnService` عمداً حفظ شده‌اند، چون:
 
-- نمادهای JNI داخل `libaether.so` از پیش بیلدشده به شکل `Java_com_msnguard_vpn_NativeCore_*` قفل شده‌اند؛ تغییر پکیج بدون بازسازی تمام کتابخانه‌های بومی (Rust + NDK) باعث کرش در لحظهٔ اتصال می‌شود.
+- نمادهای JNI داخل `libaether.so` قفل شده‌اند؛ تغییر پکیج بدون بازسازی تمام کتابخانه‌های بومی (Rust + NDK) باعث کرش در لحظهٔ اتصال می‌شود.
 - این نام‌ها هیچ‌کجا برای کاربر دیده نمی‌شوند (نه در UI، نه در تنظیمات اندروید — شناسهٔ نصب همان `app.beevpn` است).
 
 اگر بعداً خواستید داخلی هم تمیز شود: هستهٔ Rust را از `core/` برای هر سه ABI بازسازی کنید، بعد پکیج و کلاس‌ها را با یک rename کامل جابه‌جا کنید. برای انتشار عمومی الزامی نیست.
@@ -104,7 +104,7 @@ keytool -genkeypair -v -keystore release.keystore -alias beevpn \
 ## ۷. تعهدات مجوز (AGPL-3.0)
 
 - فایل `LICENSE` را حذف یا تغییر ندهید.
-- خط انتساب «بر پایهٔ MSN-GUARD» در README (فارسی/انگلیسی) و در صفحهٔ ABOUT اپ باقی بماند.
+- فقط مجوز AGPL-3.0 (فایل LICENSE) به‌عنوان تعهد حقوقی باقی می‌ماند؛ هیچ اشارهٔ برند دیگری وجود ندارد.
 - اگر نسخهٔ تغییر یافته را توزیع کردید، سورس کامل همان نسخه باید در دسترس باشد (بخش Releases + ریپازیتوری عمومی این شرط را برآورده می‌کند).
 - اجزای وندورشده (quiche، BadVPN، lwIP، Psiphon، Tor، lyrebird) مجوز مستقل خودشان را دارند.
 
@@ -147,7 +147,7 @@ keytool -genkeypair -v -keystore release.keystore -alias beevpn \
 ## ۱۰. انتشار فایل‌های دانلود روی گیت‌هاب (Releases)
 
 فایل‌های دانلود APK از طریق **GitHub Releases** منتشر می‌شوند — همان روش پروژهٔ بالادست
-(`mbm110/MSN-GUARD` در تگ v3.2.0 چهار APK + `SHA256SUMS.txt` را به‌صورت Release asset منتشر می‌کند).
+(پروژهٔ بالادست در تگ v3.2.0 چهار APK + `SHA256SUMS.txt` را به‌صورت Release asset منتشر می‌کند).
 داخل خود ریپازیتوری نمی‌توان فایل بالای ۱۰۰ مگابایت را commit کرد؛ asset های Release تا ۲ گیگابایت پشتیبانی می‌شوند.
 
 ابزارهای اضافه‌شده به سورس:

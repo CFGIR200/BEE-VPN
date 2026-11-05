@@ -19,10 +19,10 @@ import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Foxy transport manager — the app-layer engine behind MSN's FOXY method.
+ * Foxy transport manager — the app-layer engine behind BEE-VPN's FOXY method.
  *
  * Data plane (all app-side, no Rust core involvement):
- *   VpnService TUN → TunEngine (MSN's choice: Hev/Zeptun/Badvpn, untouched)
+ *   VpnService TUN → TunEngine (BEE-VPN's choice: Hev/Zeptun/Badvpn, untouched)
  *     → FoxySocksServer (127.0.0.1:SOCKS_PORT)
  *     → H2UpstreamSession (netty, ALPN h2, TLS to the Fastly edge)
  *     → HTTP CONNECT <target> with proxy-authorization Bearer <guardian JWT>

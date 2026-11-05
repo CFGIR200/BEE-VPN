@@ -1,4 +1,4 @@
-// MSN-GUARD — Android JNI bridge for Aether 2.3.0.
+// BEE-VPN — Android JNI bridge for Aether 2.3.0.
 //
 // The 2.3.0 FFI is job-shaped, not config-JSON-shaped. The engine exposes
 // aether_core_start(arguments) which spawns crate::run_with(argv) as a job,

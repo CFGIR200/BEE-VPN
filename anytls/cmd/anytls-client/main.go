@@ -16,7 +16,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// Sidecar client for the AnyTLS protocol, purpose-built for MSN-GUARD's
+// Sidecar client for the AnyTLS protocol, purpose-built for BEE-VPN's
 // SHARD transport. It is a hardened rewrite of anytls-go's sample
 // cmd/client, not the sample itself:
 //

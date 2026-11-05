@@ -36,7 +36,7 @@ import java.util.concurrent.TimeUnit
  *  - binary search 1200..min(localMtu,1500), 900 ms per probe, 90 ms gap
  *  - optimal = (bestPathMtu - overhead - SAFETY_MARGIN), snapped down to a
  *    16-byte boundary, clamped to [SCAN_FLOOR, SCAN_CEIL]
- *  - SHARD is PattNG's VLESS/Reality core (msn calls it SHARD) — same TUN
+ *  - SHARD is PattNG's VLESS/Reality core (BEE-VPN calls it SHARD) — same TUN
  *    MTU and same probe as every other method. The WebSocket UDP ceiling
  *    (500) is per-datagram inside ShardSocksFront and does not cap the TUN.
  *

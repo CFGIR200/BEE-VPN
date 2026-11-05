@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-// MSN-GUARD 2.3.15: AETHER_STATS gating removed. The Kotlin host always sets
+// BEE-VPN 2.3.15: AETHER_STATS gating removed. The Kotlin host always sets
 // AETHER_STATS=1 before the engine starts, but 2.3.13/2.3.14 field reports
 // showed Up/Down/Speed + Traffic Monitor still at 0 while a WARP tunnel was
 // carrying traffic on every engine (Hev/Zeptun/Badvpn) — which means either

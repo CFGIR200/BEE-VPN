@@ -33,13 +33,13 @@ import java.math.BigInteger
 
 /** Worker-only account enrollment. The injected HMAC is an abuse barrier, not anti-clone. */
 object IdentityRelayClient {
-    const val RELAY_A = "https://msnguard-identity-relay-a.msnguard-edge-one.workers.dev"
-    const val RELAY_B = "https://msnguard-identity-relay-b.msnguard-edge-two.workers.dev"
+    const val RELAY_A = "https://beevpn-identity-relay-a.beevpn-edge-one.workers.dev"
+    const val RELAY_B = "https://beevpn-identity-relay-b.beevpn-edge-two.workers.dev"
     const val REGISTER_PATH = "/v0a4471/reg"
     const val ENROLL_PATH_PREFIX = "/v0a4471/reg/"
-    const val AUTH_TIMESTAMP = "X-MSN-Timestamp"
-    const val AUTH_NONCE = "X-MSN-Nonce"
-    const val AUTH_SIGNATURE = "X-MSN-Signature"
+    const val AUTH_TIMESTAMP = "X-BEE-Timestamp"
+    const val AUTH_NONCE = "X-BEE-Nonce"
+    const val AUTH_SIGNATURE = "X-BEE-Signature"
     const val AUTH_ALGORITHM = "HmacSHA256"
     const val CONNECT_TIMEOUT_MS = 8_000
     const val READ_TIMEOUT_MS = 16_000

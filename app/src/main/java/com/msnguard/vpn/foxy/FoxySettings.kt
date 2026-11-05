@@ -1,6 +1,6 @@
 package com.msnguard.vpn.foxy
 
-/** Minimal settings surface for the Foxy transport in MSN-GUARD. */
+/** Minimal settings surface for the Foxy transport in BEE-VPN. */
 object FoxySettings {
     enum class TlsSplitMode { OFF, FIRST_BYTE, SNI }
 

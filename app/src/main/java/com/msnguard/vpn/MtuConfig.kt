@@ -15,7 +15,7 @@ import android.content.Context
  *   defaults, plausible for their respective encap overheads.
  * - Psiphon / Tor 1500 — they carry TCP directly, no extra tunnel
  *   header to account for beyond the TUN itself.
- * - SHARD 1500 — PattNG's VLESS/Reality core (msn calls it SHARD) — same TUN MTU as every other transport: AppConfig.VPN_MTU=1500. The WebSocket/Xray UDP payload ceiling (500) stays per-datagram
+ * - SHARD 1500 — PattNG's VLESS/Reality core (BEE-VPN calls it SHARD) — same TUN MTU as every other transport: AppConfig.VPN_MTU=1500. The WebSocket/Xray UDP payload ceiling (500) stays per-datagram
  *   inside ShardSocksFront.
  *
  * Range 68..1500 — the IPv4 minimum header plus the Ethernet ceiling.

@@ -64,7 +64,7 @@ class AppUpdater(private val activity: Activity) {
                         when {
                             release == null -> showMessage(Strings.t("No update available"), Strings.t("No compatible release was found"))
                             !isNewer(release.version, appVersion()) ->
-                                showMessage(Strings.t("You're up to date"), Strings.tf("MSN-GUARD %s is installed", appVersion()))
+                                showMessage(Strings.t("You're up to date"), Strings.tf("BEE-VPN %s is installed", appVersion()))
                             else -> announceUpdate(release)
                         }
                     }
@@ -83,7 +83,7 @@ class AppUpdater(private val activity: Activity) {
         dialogBuilder()
             .setTitle(Strings.t("Update available"))
             .setMessage(
-                Strings.tf("MSN-GUARD %s has been released. You are on %s.", release.version, appVersion()) + "\n\n" +
+                Strings.tf("BEE-VPN %s has been released. You are on %s.", release.version, appVersion()) + "\n\n" +
                     Strings.t("Tapping Update opens the download in your browser. Open the downloaded file to install it.")
             )
             .setNegativeButton(Strings.t("Later"), null)
@@ -119,7 +119,7 @@ class AppUpdater(private val activity: Activity) {
             connectTimeout = 10_000
             readTimeout = 20_000
             setRequestProperty("Accept", "application/vnd.github+json")
-            setRequestProperty("User-Agent", "MSN-GUARD-Android")
+            setRequestProperty("User-Agent", "BEE-VPN-Android")
         }
         try {
             if (connection.responseCode == HttpURLConnection.HTTP_NOT_FOUND) return null

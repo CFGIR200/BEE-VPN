@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MSN-GUARD log decoder.
+BEE-VPN log decoder.
 
 The in-app log is redacted by `LogRedactor.kt` before the user copies it, so
 every address, port and subsystem name shows up as a token. Tokens are
@@ -12,8 +12,8 @@ undo one-way digests (hostnames, file paths, node labels) because those are
 FNV-1a hashes — but two identical digests always mean the same original.
 
 USAGE
-    python3 log-decode.py msn-guard-log.txt           # full decode
-    python3 log-decode.py msn-guard-log.txt --tok N26W5V3   # decode one token
+    python3 log-decode.py beevpn-log.txt           # full decode
+    python3 log-decode.py beevpn-log.txt --tok N26W5V3   # decode one token
     python3 log-decode.py --codebook                  # print the whole codebook
 
 What is reversible and what is not
