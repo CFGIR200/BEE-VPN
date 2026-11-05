@@ -78,6 +78,7 @@ jobs:
           AETHERY_KEY_PASSWORD: ${{ secrets.AETHERY_KEY_PASSWORD }}
           BEE_IDENTITY_RELAY_HMAC: ${{ secrets.BEE_IDENTITY_RELAY_HMAC }}
           BEE_LICENSE_URL: ${{ secrets.BEE_LICENSE_URL }}
+          BEE_TELEGRAM_URL: ${{ secrets.BEE_TELEGRAM_URL }}
           BEE_LICENSE_PUBKEY_B64: ${{ secrets.BEE_LICENSE_PUBKEY_B64 }}
           # foojay can no longer serve JDK 21, so stop Gradle trying to fetch
           # one and use the JDK installed above. auto-detect is Gradle's default.
