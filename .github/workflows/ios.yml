@@ -12,7 +12,9 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    # macos-14 is retired on this account ("configuration not supported");
+    # macos-15 ships Xcode 16, which is what WireGuardKit 1.0.16 needs.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
