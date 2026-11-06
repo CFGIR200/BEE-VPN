@@ -18,6 +18,13 @@ object EngineConfig {
     /// The anytls sidecar's listener — same slot plan as Android (1826).
     const val ANYTLS_SIDECAR_PORT = 1826
 
+    /// The TUN interface's own IPv4 (the /30 gateway). TunnelVerifier checks
+    /// the system default route against this — keep in sync with it.
+    const val TUN_INTERFACE_IP = "172.19.0.1"
+
+    private const val TUN_GATEWAY_V4 = "$TUN_INTERFACE_IP/30"
+    private const val TUN_GATEWAY_V6 = "fdfe:dcba:9876::1/126"
+
     private val PRIVATE_CIDRS = listOf(
         "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8",
         "169.254.0.0/16", "100.64.0.0/10", "0.0.0.0/8", "224.0.0.0/3",
@@ -27,8 +34,14 @@ object EngineConfig {
     /// Builds the config. `exitOutbound` carries the tag the routing rule
     /// points at (the builder already set tag "bee-exit"); pass null to run
     /// the direct leg as the exit (fragment mode without a node).
+    /// `ipv6Available` gates every IPv6 entry in the TUN inbound: when IPv6
+    /// is disabled system-wide (registry DisabledComponents — common on
+    /// Iranian machines), Xray's TUN **refuses to start** if the config
+    /// carries IPv6 gateway/route entries (proxy/tun README), which presented
+    /// to buyers as «کانکت می‌شود و وصل نمی‌شود». IPv4-only is always valid.
     fun build(
         useTun: Boolean,
+        ipv6Available: Boolean,
         exitOutbound: JSONObject?,
         fragmentOnDirect: Boolean,
     ): JSONObject {
@@ -47,10 +60,21 @@ object EngineConfig {
                             .put("name", "BeeVPN")
                             .put("desc", "BEE-VPN")
                             .put("mtu", 1500)
-                            .put("gateway", JSONArray().put("172.19.0.1/30").put("fdfe:dcba:9876::1/126"))
+                            .put("gateway", JSONArray().apply {
+                                put(TUN_GATEWAY_V4)
+                                if (ipv6Available) put(TUN_GATEWAY_V6)
+                            })
                             .put("dns", JSONArray().put("1.1.1.1").put("8.8.8.8"))
-                            .put("autoSystemRoutingTable", JSONArray().put("0.0.0.0/0").put("::/0"))
-                            .put("autoOutboundsInterface", "auto"),
+                            .put("autoSystemRoutingTable", JSONArray().apply {
+                                put("0.0.0.0/0")
+                                if (ipv6Available) put("::/0")
+                            })
+                            .put("autoOutboundsInterface", "auto")
+                            // Windows queries other interfaces' DNS servers
+                            // regardless of the routing table — without the
+                            // WFP leak block, DNS walks around the tunnel and
+                            // the buyer sees «وصل است ولی سایت‌ها باز نمی‌شوند».
+                            .put("autoSystemWfpBlockLeak", JSONArray().put("dns")),
                     )
                     .put(
                         "sniffing",

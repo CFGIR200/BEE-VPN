@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "com.beevpn"
-version = "1.0.1"
+version = "1.0.2"
 
 repositories {
     // JetBrains' read-through mirror of Maven Central — resilient when the
@@ -73,7 +73,7 @@ val generateBeeConfig by tasks.registering {
                 const val TELEGRAM_URL = "${esc(telegram)}"
                 const val SUPPORT_URL = "${esc(support)}"
                 const val GITHUB_URL = "https://github.com/CFGIR200/BEE-VPN"
-                const val VERSION = "1.0.1"
+                const val VERSION = "1.0.2"
             }
             """.trimIndent()
         )
@@ -117,7 +117,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Msi)
             packageName = "BEE-VPN"
-            packageVersion = "1.0.1"
+            packageVersion = "1.0.2"
             description = "BEE-VPN — the honey-fast Windows client"
             vendor = "BEE-VPN"
             windows {

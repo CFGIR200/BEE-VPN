@@ -37,18 +37,25 @@ object ShardSubscription {
         System.currentTimeMillis() - lastCheckMillis() > MIN_INTERVAL_MS
 
     /// Refresh in the background. Returns the (possibly cached) pool either way.
+    /// Android parity: when there is no cache yet (fresh install, GitHub raw
+    /// unreachable) the bundled seed fills in instantly so the buyer can
+    /// connect while the background refresh keeps trying.
     fun refreshIfDue(): List<ShardProfile> {
         if (needsCheck() && refreshing.compareAndSet(false, true)) {
             Thread {
                 try { refreshNow() } finally { refreshing.set(false) }
             }.start()
         }
-        return cachedProfiles()
+        return cachedProfiles().ifEmpty { seedProfiles() }
     }
 
     /// Blocking refresh — used by the explicit "به‌روزرسانی" button.
     fun refreshNow(): List<ShardProfile> {
-        val conn = URL(SUBSCRIPTION_URL).openConnection() as HttpURLConnection
+        val conn = try {
+            URL(SUBSCRIPTION_URL).openConnection() as HttpURLConnection
+        } catch (_: Exception) {
+            return cachedProfiles().ifEmpty { seedProfiles() }
+        }
         conn.connectTimeout = CONNECT_TIMEOUT_MS
         conn.readTimeout = READ_TIMEOUT_MS
         conn.setRequestProperty("User-Agent", "BEE-VPN-Windows/1.0")
@@ -61,7 +68,7 @@ object ShardSubscription {
                 stamp()
                 return cachedProfiles()
             }
-            if (conn.responseCode != 200) return cachedProfiles()
+            if (conn.responseCode != 200) return cachedProfiles().ifEmpty { seedProfiles() }
             val body = conn.inputStream.bufferedReader().readText()
             if (ShardImport.parseBatch(body).isNotEmpty()) {
                 AppPaths.shardCache.writeText(body)
@@ -71,10 +78,22 @@ object ShardSubscription {
             stamp()
             return cachedProfiles()
         } catch (_: Exception) {
-            return cachedProfiles()
+            return cachedProfiles().ifEmpty { seedProfiles() }
         } finally {
             conn.disconnect()
         }
+    }
+
+    /// The offline pool — the same idea as Android's assets/shard-seed.txt:
+    /// a snapshot of the subscription shipped inside the app so a blocked
+    /// GitHub raw never leaves the pool empty on first run.
+    fun seedProfiles(): List<ShardProfile> = try {
+        val stream = Thread.currentThread().contextClassLoader
+            ?.getResourceAsStream("seed/shard-seed.txt")
+            ?: ClassLoader.getSystemResourceAsStream("seed/shard-seed.txt")
+        stream?.use { ShardImport.parseBatch(it.bufferedReader().readText()) } ?: emptyList()
+    } catch (_: Exception) {
+        emptyList()
     }
 
     private fun stamp() {

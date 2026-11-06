@@ -54,14 +54,21 @@ fun HomeView() {
                     color = when (state) {
                         TunnelController.State.CONNECTED -> Honey.ok
                         TunnelController.State.FAILED -> Honey.danger
-                        TunnelController.State.STARTING, TunnelController.State.PROVISIONING, TunnelController.State.STOPPING -> Honey.primary
+                        TunnelController.State.STARTING, TunnelController.State.PROVISIONING,
+                        TunnelController.State.VERIFYING, TunnelController.State.STOPPING -> Honey.primary
                         else -> Honey.ink
                     },
                 ),
             )
-            TunnelController.lastError?.let {
+            TunnelController.lastError?.let { err ->
                 Spacer(Modifier.height(6.dp))
-                Text(it, style = T.muted.copy(color = Honey.danger, fontSize = 13.sp))
+                Text(err, style = T.muted.copy(color = Honey.danger, fontSize = 13.sp))
+                if (err.contains("مدیر")) {
+                    Spacer(Modifier.height(8.dp))
+                    HoneyButton(title = "اجرای دوباره با دسترسی مدیر", filled = false) {
+                        com.beevpn.win.engine.WindowsAdmin.relaunchElevated()
+                    }
+                }
             }
 
             // Subscription banner — the days-left line from the buyer's own hive pass.
@@ -91,7 +98,7 @@ fun HomeView() {
 
             Spacer(Modifier.height(16.dp))
             val busy = state == TunnelController.State.STARTING || state == TunnelController.State.PROVISIONING ||
-                state == TunnelController.State.STOPPING
+                state == TunnelController.State.VERIFYING || state == TunnelController.State.STOPPING
             HoneyButton(
                 title = when (state) {
                     TunnelController.State.CONNECTED, TunnelController.State.STOPPING -> "قطع اتصال"

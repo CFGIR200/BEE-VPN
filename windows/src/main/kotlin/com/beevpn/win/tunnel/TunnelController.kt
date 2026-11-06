@@ -1,11 +1,13 @@
 package com.beevpn.win.tunnel
 
 import com.beevpn.win.AppPaths
+import com.beevpn.win.license.LicenseManager
 import com.beevpn.win.SecureStore
 import com.beevpn.win.engine.AnytlsSidecarConfig
 import com.beevpn.win.engine.CoreExtractor
 import com.beevpn.win.engine.EngineConfig
 import com.beevpn.win.engine.EngineProcess
+import com.beevpn.win.engine.WindowsAdmin
 import com.beevpn.win.shard.ShardImport
 import com.beevpn.win.shard.ShardProfile
 import com.beevpn.win.shard.ShardProber
@@ -17,23 +19,27 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 
-/// Orchestrates the engines — the desktop twin of MsnGuardVpnService's
-/// transport bring-up: pick the transport, build the config, start xray
-/// (TUN + SOCKS 1819), start the anytls sidecar when the exit needs it,
-/// and report honest state transitions back to the UI.
+/// Orchestrates the engines — the desktop twin of MsnGuardVpnService:
+/// license gate → pick the transport → build the config → start xray
+/// (TUN + SOCKS 1819) → start the anytls sidecar when the exit needs it →
+/// **verify the tunnel actually carries the system's traffic** → CONNECTED,
+/// then a 30-second watchdog with Android's 5/15/30/60/120 reconnect ladder.
 object TunnelController {
 
     enum class Mode { AUTO, SHARD, WARP, MANUAL }
 
-    enum class State { DISCONNECTED, PROVISIONING, STARTING, CONNECTED, STOPPING, FAILED }
+    enum class State { DISCONNECTED, PROVISIONING, STARTING, VERIFYING, CONNECTED, STOPPING, FAILED }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val mutex = Mutex()
@@ -44,6 +50,12 @@ object TunnelController {
     var lastError by mutableStateOf<String?>(null); private set
     var lastExitSummary by mutableStateOf(""); private set
     var connectedSince: Long = 0
+
+    // Android parity knobs
+    @Volatile private var userDisconnect = false
+    private var watchdogJob: Job? = null
+    private var reconnectJob: Job? = null
+    private val reconnectAttempts = AtomicInteger(0)
 
     // Prefs (persisted through SecureStore like the rest of the identity data)
     var mode: Mode
@@ -112,10 +124,14 @@ object TunnelController {
     // ------------------------------------------------------------- connect
 
     fun connect() {
+        userDisconnect = false
         scope.launch { mutex.withLock { withContext(Dispatchers.IO) { connectBlocking() } } }
     }
 
     fun disconnect() {
+        userDisconnect = true
+        watchdogJob?.cancel()
+        reconnectJob?.cancel()
         scope.launch { mutex.withLock { withContext(Dispatchers.IO) { stopEngines("قطع اتصال") } } }
     }
 
@@ -134,9 +150,20 @@ object TunnelController {
     }
 
     private suspend fun connectBlocking() {
-        if (state == State.CONNECTED || state == State.STARTING || state == State.PROVISIONING) return
+        if (state == State.CONNECTED || state == State.STARTING ||
+            state == State.PROVISIONING || state == State.VERIFYING
+        ) return
         lastError = null
+
+        // Android parity — MsnGuardVpnService refuses to bring up a tunnel
+        // when the entitlement is gone: "Subscription inactive — renew".
+        if (LicenseManager.isConfigured && LicenseManager.gate == LicenseManager.Gate.LOCKED) {
+            fail("اشتراک غیرفعال است — برای اتصال، اشتراک را تمدید کن یا دوباره وارد شو")
+            return
+        }
+
         setState(State.PROVISIONING, "آماده‌سازی…")
+        if (AppPaths.isWindows()) TunnelVerifier.sweepStaleRoute()
 
         val cores = CoreExtractor.ensure()
         if (cores == null) {
@@ -144,21 +171,33 @@ object TunnelController {
             return
         }
         val needsTun = AppPaths.isWindows()
-        if (needsTun && !com.beevpn.win.engine.WindowsAdmin.isAdmin()) {
+        if (needsTun && !WindowsAdmin.isAdmin()) {
             fail("ساخت تونل VPN دسترسی مدیر می‌خواهد — برنامه را با «Run as administrator» باز کن")
             return
         }
 
         try {
+            // Pre-connect baseline of the bare ISP egress — the yardstick the
+            // post-connect system probe is measured against. Nullable: when
+            // the trace itself is blocked the ladder falls back to the
+            // route + engine checks only.
+            setState(State.PROVISIONING, "اندازه‌گیری خط پایه…")
+            val baseline = withContext(Dispatchers.IO) { TunnelVerifier.traceIpDirect(6_000L) }
+            TunnelVerifier.log("baseline egress: ${baseline ?: "unknown"}")
+
             val exit = resolveExit()   // picks transport + provisions WARP when needed
             if (exit == null) { return } // resolveExit already called fail()
             val sidecarNeeded = exit.sidecarConfig != null
 
             setState(State.STARTING, "راه‌اندازی موتور…")
 
-            // xray: TUN + SOCKS 1819 + exit
+            // xray: TUN + SOCKS 1819 + exit. IPv6 entries are included only
+            // when the system actually has IPv6 — with IPv6 disabled
+            // system-wide, Xray's TUN refuses to start.
+            val ipv6 = withContext(Dispatchers.IO) { TunnelVerifier.ipv6Available() }
             val xrayConfig = EngineConfig.build(
                 useTun = needsTun,
+                ipv6Available = ipv6,
                 exitOutbound = exit.outbound,
                 fragmentOnDirect = fragmentOnDirect,
             )
@@ -174,24 +213,19 @@ object TunnelController {
             val proc = EngineProcess("xray", xrayExe, listOf("run", "-c", xrayConfigFile.absolutePath), cores)
             proc.onLine = { line ->
                 EngineProcess.logLine("[xray] $line")
-                if (line.contains("failed", true) || line.contains("error", true)) EngineProcess.logLine(line)
             }
             proc.onExit = { code ->
-                if (state == State.CONNECTED || state == State.STARTING) {
+                if (state == State.CONNECTED) {
+                    scheduleAutoReconnect("موتور VPN ناگهان متوقف شد (کد $code)")
+                } else if (state == State.STARTING || state == State.VERIFYING) {
                     scope.launch {
-                        mutex.withLock { withContext(Dispatchers.IO) {
-                            if (code != 0 && state == State.CONNECTED) {
-                                fail("موتور VPN ناگهان متوقف شد (کد $code) — جزئیات در گزارش پیشرفته")
-                            } else {
-                                stopEngines(null)
-                            }
-                        } }
+                        mutex.withLock { withContext(Dispatchers.IO) { stopEngines(null) } }
                     }
                 }
             }
             proc.start()
             xray = proc
-            if (!EngineProcess.awaitPort(EngineConfig.SOCKS_PORT, 12_000) { proc.isAlive }) {
+            if (!EngineProcess.awaitPort(EngineConfig.SOCKS_PORT, 20_000) { proc.isAlive }) {
                 fail("xray روی پورت ${EngineConfig.SOCKS_PORT} بالا نیامد — گزارش پیشرفته را ببین")
                 return
             }
@@ -206,11 +240,7 @@ object TunnelController {
                 sc.onLine = { EngineProcess.logLine("[sing-box] $it") }
                 sc.onExit = { code ->
                     if (state == State.CONNECTED && code != 0) {
-                        scope.launch {
-                            mutex.withLock { withContext(Dispatchers.IO) {
-                                fail("سایدکار AnyTLS متوقف شد (کد $code)")
-                            } }
-                        }
+                        scheduleAutoReconnect("سایدکار AnyTLS متوقف شد (کد $code)")
                     }
                 }
                 sc.start()
@@ -221,13 +251,125 @@ object TunnelController {
                 }
             }
 
+            if (needsTun) {
+                setState(State.VERIFYING, "بررسی تونل سیستم…")
+                val verdict = withContext(Dispatchers.IO) { verifyTunnelUp(baseline) }
+                if (verdict != null) {
+                    fail(verdict)
+                    return
+                }
+            }
+
             connectedSince = System.currentTimeMillis() / 1000
-            setState(State.CONNECTED, "متصل است — ${exit.summary}")
             lastExitSummary = exit.summary
+            reconnectAttempts.set(0)   // a verified connect resets the ladder
+            setState(State.CONNECTED, "متصل است — ${exit.summary}")
+            startWatchdog()
         } catch (e: Exception) {
             fail("خطای غیرمنتظره: ${e.message ?: e.javaClass.simpleName}")
         }
     }
+
+    /// The Android rule: CONNECTED is earned, never assumed. Returns null
+    /// only when (1) the TUN owns the system default route, (2) real bytes
+    /// flow through the engine's SOCKS to the far end, and (3) the SYSTEM's
+    /// own egress differs from the pre-connect baseline. Anything else is an
+    /// honest, actionable Persian failure — never a fake green dot.
+    private fun verifyTunnelUp(baseline: String?): String? {
+        // 1) default route through the TUN — xray installs it at startup;
+        //    give it 15 s, then win the metric race ourselves.
+        var routeUp = false
+        val deadline = System.currentTimeMillis() + 15_000
+        while (System.currentTimeMillis() < deadline) {
+            if (TunnelVerifier.tunRouteWins()) { routeUp = true; break }
+            Thread.sleep(600)
+        }
+        if (!routeUp) {
+            TunnelVerifier.log("xray route not winning the metric race — installing fallback default route")
+            if (!TunnelVerifier.ensureTunRoute()) {
+                return "تونل ساخته شد اما مسیر پیش‌فرض ویندوز از آن عبور نمی‌کند — «گزارش پیشرفته» را ببین"
+            }
+        }
+
+        // 2) engine end-to-end: bytes through SOCKS 1819 reach the far end
+        var exitIp: String? = null
+        repeat(2) {
+            if (exitIp != null) return@repeat
+            exitIp = TunnelVerifier.traceIpViaSocks(EngineConfig.SOCKS_PORT, 15_000)
+        }
+        if (exitIp == null) {
+            return "تونل بالا آمد اما خروجی (نود/WARP) ترافیک پاس نمی‌دهد — نود دیگری را امتحان کن یا «به‌روزرسانی نودها» را بزن"
+        }
+        TunnelVerifier.log("engine egress: $exitIp")
+
+        // 3) system end-to-end: the machine itself must leave through the
+        //    tunnel — same egress as the bare ISP means routing failed even
+        //    though the engine is healthy.
+        if (baseline != null) {
+            val sysIp = TunnelVerifier.traceIpDirect(12_000)
+            TunnelVerifier.log("system egress: ${sysIp ?: "unknown"} (baseline $baseline)")
+            if (sysIp == baseline) {
+                return "تونل سالم است اما ترافیک سیستم از آن عبور نمی‌کند (خروجی سیستم = خروجی قبل از اتصال) — فایروال یا آنتی‌ویروس را بررسی کن"
+            }
+        } else {
+            TunnelVerifier.log("baseline unknown — system probe skipped (engine e2e already passed)")
+        }
+        return null
+    }
+
+    // ------------------------------------------------------------- watchdog
+
+    /// Android's 30-second watchdog: process alive + SOCKS accepting + a
+    /// real byte through the tunnel. Two consecutive strikes schedule the
+    /// reconnect ladder instead of leaving a dead tunnel labelled «متصل».
+    private fun startWatchdog() {
+        watchdogJob?.cancel()
+        watchdogJob = scope.launch {
+            var strikes = 0
+            while (state == State.CONNECTED) {
+                delay(30_000)
+                if (state != State.CONNECTED) break
+                val alive = withContext(Dispatchers.IO) {
+                    (xray?.isAlive == true) &&
+                        EngineProcess.portOpen(EngineConfig.SOCKS_PORT) &&
+                        TunnelVerifier.traceIpViaSocks(EngineConfig.SOCKS_PORT, 10_000) != null
+                }
+                if (alive) {
+                    strikes = 0
+                    continue
+                }
+                strikes++
+                TunnelVerifier.log("watchdog strike $strikes")
+                if (strikes >= 2) {
+                    scheduleAutoReconnect("تونل از کار افتاد")
+                    break
+                }
+            }
+        }
+    }
+
+    /// Android's scheduleAutoReconnect: backoff 5/15/30/60/120 s, suppressed
+    /// when the user themselves pressed disconnect, ladder reset on a
+    /// verified connect (see connectBlocking).
+    private fun scheduleAutoReconnect(reason: String) {
+        if (userDisconnect) return
+        watchdogJob?.cancel()
+        val attempt = reconnectAttempts.getAndIncrement()
+        val ladder = TunnelVerifier.RECONNECT_BACKOFF_S
+        val wait = ladder[attempt.coerceAtMost(ladder.size - 1)]
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
+            mutex.withLock {
+                if (userDisconnect) return@withLock
+                withContext(Dispatchers.IO) { stopEngines(null) }
+                setState(State.PROVISIONING, "$reason — اتصال مجدد خودکار تا $wait ثانیه…")
+                delay(wait * 1000L)
+                if (!userDisconnect) withContext(Dispatchers.IO) { connectBlocking() }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ transports
 
     private class ResolvedExit(
         val outbound: JSONObject?,
@@ -346,10 +488,12 @@ object TunnelController {
     // ---------------------------------------------------------- disconnect
 
     private fun stopEngines(caption: String?) {
+        watchdogJob?.cancel()
         sidecar?.stop()
         sidecar = null
         xray?.stop()
         xray = null
+        if (AppPaths.isWindows()) TunnelVerifier.removeFallbackRoute()
         connectedSince = 0
         setState(State.DISCONNECTED, caption ?: "قطع است")
     }
