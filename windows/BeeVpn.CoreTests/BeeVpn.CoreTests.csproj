@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Core tests for BEE-VPN for Windows — runs on ANY OS (no WinForms needed).
+    Compiles the same Jalali.cs + BeeLicense.cs the app ships, and checks:
+      * Jalali calendar conversions against known Nowruz dates
+      * Ed25519 token verify round-trip (the exact wire format of the Worker)
+      * /activate + /verify client flows against a local fake license server
+      * Persian error mapping
+    Run:  dotnet run -p BeeVpn.CoreTests
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.5.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="../BeeVpn.Windows/Core/Jalali.cs" />
+    <Compile Include="../BeeVpn.Windows/Core/BeeLicense.cs" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    BEE-VPN for Windows: the Windows edition of the BEE-VPN Android app.
+    Same license system (Ed25519 tokens v1.payload.sig against the license
+    Worker), same honey theme, same Persian-first UI, and the same tunnel
+    engine: Aether (MASQUE / Cloudflare WARP) as a bundled aether.exe.
+
+    Cross-builds from Linux/CI:
+      dotnet publish -c Release -r win-x64 -self-contained true
+        /p:PublishSingleFile=true /p:EnableCompressionInSingleFile=true
+    (EnableWindowsTargeting makes WinForms build on non-Windows hosts.)
+  -->
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <AssemblyName>BEE-VPN</AssemblyName>
+    <RootNamespace>BeeVpn</RootNamespace>
+    <Version>3.3.1</Version>
+    <FileVersion>3.3.1.0</FileVersion>
+    <InformationalVersion>3.3.1 (Windows, parity with Android 3.3.1)</InformationalVersion>
+    <Product>BEE-VPN</Product>
+    <Company>BEE-VPN</Company>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <!-- .NET 8 has no built-in Ed25519; BouncyCastle is what the Android app
+         (LicenseManager.kt) uses for the exact same verification. -->
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.5.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="fonts\Vazirmatn-Regular.ttf" />
+    <EmbeddedResource Include="fonts\Vazirmatn-Bold.ttf" />
+  </ItemGroup>
+
+</Project>

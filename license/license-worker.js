@@ -288,7 +288,7 @@ if (url.pathname === '/verify') {
     const fresh = await issueToken(env, {
       s: row.username, k: 'account', p: row.plan, i: installId, e: row.expires_at, t: now,
     });
-    return json(null, 200, { ok: true, token: fresh, subject: row.username, plan: row.plan, kind: 'account', expiry: row.expires_at });
+    return json(null, 200, { ok: true, token: fresh, subject: row.username, plan: row.plan, kind: 'account', expiry: row.expires_at, activated_at: row.activated_at });
   }
   const row = await env.DB.prepare('SELECT * FROM licenses WHERE code = ?').bind(String(payload.s)).first();
   if (!row || row.status !== 'active') return bad(403, 'revoked');
@@ -297,7 +297,7 @@ if (url.pathname === '/verify') {
   const fresh = await issueToken(env, {
     s: row.code, k: 'code', p: row.plan, i: installId, e: row.expires_at, t: now,
   });
-  return json(null, 200, { ok: true, token: fresh, subject: row.code, plan: row.plan, kind: 'code', expiry: row.expires_at });
+  return json(null, 200, { ok: true, token: fresh, subject: row.code, plan: row.plan, kind: 'code', expiry: row.expires_at, activated_at: row.activated_at });
 }
 
 return bad(404, 'not found');
