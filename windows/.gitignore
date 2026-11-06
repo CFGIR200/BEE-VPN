@@ -1,8 +1,7 @@
-# Kotlin/Compose Desktop (the native client in windows/)
 .gradle/
 build/
-resources-cores/cores/*
-!resources-cores/cores/README.txt
+cores-bin/cores/*
+!cores-bin/cores/.keep
 
 # WinForms legacy client (BeeVpn.Windows/)
 bin/

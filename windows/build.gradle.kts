@@ -47,6 +47,10 @@ java {
 // ---------------------------------------------------------------------------
 val beeConfigDir = layout.buildDirectory.dir("generated/beekt")
 
+sourceSets.main {
+    resources.srcDir(project.file("cores-bin"))
+}
+
 val generateBeeConfig by tasks.registering {
     val outDir = beeConfigDir
     outputs.dir(outDir)
@@ -116,10 +120,6 @@ compose.desktop {
             packageVersion = "1.0.0"
             description = "BEE-VPN — the honey-fast Windows client"
             vendor = "BEE-VPN"
-            // CI drops xray.exe / sing-box.exe / wintun.dll / geo*.dat under
-            // resources-cores/cores before packaging; everything lands inside
-            // the app (MSI and portable alike) under <resources>/cores.
-            appResourcesRootDir.set(project.file("resources-cores"))
             windows {
                 menu = true
                 shortcut = true

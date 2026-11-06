@@ -36,13 +36,21 @@ jobs:
           if ($h -ne "99185d75d314a07dbba4a130c8ad986cbeb629a07927975636b341ca61f991df") { throw "sing-box zip checksum mismatch: $h" }
           Expand-Archive sb.zip -DestinationPath sbsrc
 
-          New-Item -ItemType Directory -Force -Path windows/resources-cores/cores | Out-Null
-          Copy-Item xraysrc/xray.exe    windows/resources-cores/cores/
-          Copy-Item xraysrc/geoip.dat   windows/resources-cores/cores/
-          Copy-Item xraysrc/geosite.dat windows/resources-cores/cores/
-          Copy-Item xraysrc/wintun.dll  windows/resources-cores/cores/
-          Copy-Item sbsrc/sing-box-1.14.4-windows-amd64/sing-box.exe windows/resources-cores/cores/
-          Get-ChildItem windows/resources-cores/cores | Format-Table Name, Length
+          # Cores go under windows/cores-bin/cores/ — a Gradle resources srcDir —
+          # so they end up INSIDE the app jar; the app extracts them on first
+          # connect. This ships with both the MSI and the portable zip.
+          New-Item -ItemType Directory -Force -Path windows/cores-bin/cores | Out-Null
+          $dst = "windows/cores-bin/cores"
+          Copy-Item xraysrc/xray.exe    $dst/
+          Copy-Item xraysrc/geoip.dat   $dst/
+          Copy-Item xraysrc/geosite.dat $dst/
+          Copy-Item xraysrc/wintun.dll  $dst/
+          Copy-Item sbsrc/sing-box-1.14.4-windows-amd64/sing-box.exe $dst/
+          # size manifest the app uses to detect partial/stale extractions
+          Get-ChildItem $dst | Where-Object { $_.Name -ne "manifest.txt" } |
+            ForEach-Object { "$($_.Name):$($_.Length)" } | Set-Content "$dst/manifest.txt"
+          Get-Content "$dst/manifest.txt"
+          Get-ChildItem $dst | Format-Table Name, Length
 
       - name: Build (MSI + distributable app image)
         shell: pwsh
@@ -62,9 +70,11 @@ jobs:
           $ErrorActionPreference = "Stop"
           $app = "windows/build/compose/binaries/main/app/BEE-VPN"
           Get-ChildItem $app | Format-Table Name, Length
-          # cores travel inside the app image (resources dir), verify:
-          $resDir = Get-ChildItem "$app/app" -Directory | Where-Object { Test-Path "$($_.FullName)/cores/xray.exe" } | Select-Object -First 1
-          if (-not $resDir) { throw "cores did not land in the app image" }
+          # cores ride INSIDE the app jar (extracted on first connect)
+          $jar = Get-ChildItem "$app/app" -Filter "*.jar" | Where-Object { $_.Name -notlike "*resources*" } | Select-Object -First 1
+          if (-not $jar) { throw "app jar not found in the image" }
+          $listed = jar tf $jar.FullName | Select-String "cores/xray.exe"
+          if (-not $listed) { throw "cores did not land inside the app jar" }
           Copy-Item windows/BEE-VPN.bat "$app/BEE-VPN.bat"
           Copy-Item windows/README-FA.txt "$app/README-FA.txt"
           Compress-Archive -Path $app -DestinationPath BEE-VPN-1.0.0-portable-x64.zip

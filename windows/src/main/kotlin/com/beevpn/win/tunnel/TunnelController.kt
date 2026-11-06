@@ -3,6 +3,7 @@ package com.beevpn.win.tunnel
 import com.beevpn.win.AppPaths
 import com.beevpn.win.SecureStore
 import com.beevpn.win.engine.AnytlsSidecarConfig
+import com.beevpn.win.engine.CoreExtractor
 import com.beevpn.win.engine.EngineConfig
 import com.beevpn.win.engine.EngineProcess
 import com.beevpn.win.shard.ShardImport
@@ -133,9 +134,9 @@ object TunnelController {
         lastError = null
         setState(State.PROVISIONING, "آماده‌سازی…")
 
-        val cores = AppPaths.coresDir()
+        val cores = CoreExtractor.ensure()
         if (cores == null) {
-            fail("موتورهای VPN (xray.exe / sing-box.exe) کنار برنامه پیدا نشدند — پوشهٔ cores را کنار exe بگذار")
+            fail("موتورهای VPN (xray.exe / sing-box.exe) پیدا نشدند — بستهٔ رسمی (MSI یا ZIP قابل حمل) را نصب کن یا پوشهٔ cores را کنار exe بگذار")
             return
         }
         val needsTun = AppPaths.isWindows()
