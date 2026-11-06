@@ -70,11 +70,16 @@ jobs:
           $ErrorActionPreference = "Stop"
           $app = "windows/build/compose/binaries/main/app/BEE-VPN"
           Get-ChildItem $app | Format-Table Name, Length
-          # cores ride INSIDE the app jar (extracted on first connect)
-          $jar = Get-ChildItem "$app/app" -Filter "*.jar" | Where-Object { $_.Name -notlike "*resources*" } | Select-Object -First 1
-          if (-not $jar) { throw "app jar not found in the image" }
-          $listed = jar tf $jar.FullName | Select-String "cores/xray.exe"
-          if (-not $listed) { throw "cores did not land inside the app jar" }
+          # cores ride INSIDE the app jars (extracted on first connect) —
+          # scan every jar: the main jar is content-hashed, not a fixed name.
+          $found = $false
+          Get-ChildItem "$app/app" -Filter "*.jar" | ForEach-Object {
+            if (-not $found) {
+              $hits = jar tf $_.FullName | Select-String "cores/xray.exe"
+              if ($hits) { $found = $true; Write-Host "cores present in $($_.Name)" }
+            }
+          }
+          if (-not $found) { throw "cores did not land inside the app jar" }
           Copy-Item windows/BEE-VPN.bat "$app/BEE-VPN.bat"
           Copy-Item windows/README-FA.txt "$app/README-FA.txt"
           Compress-Archive -Path $app -DestinationPath BEE-VPN-1.0.0-portable-x64.zip
