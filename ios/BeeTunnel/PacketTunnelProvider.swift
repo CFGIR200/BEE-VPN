@@ -113,7 +113,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             settings.dnsSettings = NEDNSSettings(servers: dns)
         }
 
-        let mtu = Int(providerConfiguration["MTU"] as? String ?? "1280")
+        let mtu = Int(providerConfiguration["MTU"] as? String ?? "1280") ?? 1280
         settings.mtu = NSNumber(value: mtu > 0 ? mtu : 1280)
         return settings
     }
