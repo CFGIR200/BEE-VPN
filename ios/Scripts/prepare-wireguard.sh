@@ -29,6 +29,17 @@ open(path, 'w').write(patched)
 print('platforms block removed from', path, '-', 'patched' if patched != src else 'already clean')
 EOF
 
+# New SDKs (Xcode 16+) split Darwin types into fine-grained modules, so
+# WireGuardKitC.h needs an explicit <sys/types.h> before using u_int32_t and
+# friends (wireguard-apple issue / stackoverflow.com/questions/79002585).
+HEADER="$WG/Sources/WireGuardKitC/WireGuardKitC.h"
+if ! grep -q '#include <sys/types.h>' "$HEADER"; then
+  sed -i.bak '1i\
+#include <sys/types.h>
+' "$HEADER"
+  echo "patched $HEADER (sys/types.h)"
+fi
+
 : "${PLATFORM_NAME:=iphoneos}"
 : "${SDKROOT:=$(xcrun --sdk iphoneos --show-sdk-path)}"
 : "${ARCHS:=arm64}"
