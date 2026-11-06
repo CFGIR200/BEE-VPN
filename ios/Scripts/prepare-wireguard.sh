@@ -16,11 +16,18 @@ if [ ! -d "$WG/Sources/WireGuardKitGo" ]; then
     https://github.com/WireGuard/wireguard-apple.git "$WG"
 fi
 
-# Xcode 26 raised the SwiftPM platform floor — lift the package to match.
-sed -i.bak \
-  -e 's/\.macOS(\.v12)/.macOS(.v13)/' \
-  -e 's/\.iOS(\.v15)/.iOS(.v16)/' \
-  "$WG/Package.swift"
+# Modern Xcode (26+) marks WireGuardKit's platform constants (.iOS(.v15),
+# .macOS(.v12), and even .v13/.v16) as unavailable — the SDK floor keeps
+# moving. The bulletproof patch is to drop the platforms block entirely:
+# SwiftPM then uses the toolchain's own defaults, which are always valid.
+python3 - "$WG/Package.swift" <<'EOF'
+import re, sys
+path = sys.argv[1]
+src = open(path).read()
+patched = re.sub(r'platforms:\s*\[[^\]]*\]\s*,\s*\n', '', src, count=1)
+open(path, 'w').write(patched)
+print('platforms block removed from', path, '-', 'patched' if patched != src else 'already clean')
+EOF
 
 : "${PLATFORM_NAME:=iphoneos}"
 : "${SDKROOT:=$(xcrun --sdk iphoneos --show-sdk-path)}"
