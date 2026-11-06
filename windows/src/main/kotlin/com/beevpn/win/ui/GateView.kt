@@ -1,6 +1,8 @@
 package com.beevpn.win.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,10 +13,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -26,8 +26,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -47,14 +51,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import java.awt.Desktop
-import java.net.URI
 
 /// The gate — the buyer's first screen: paste the BEE- code from the Telegram
 /// invoice, or log into the account the admin issued. The visual twin of
-/// LicenseGateActivity / GateView.swift.
+/// LicenseGateActivity / GateView.swift, staged as a glowing glass vault door.
 ///
-/// Activation UX contract (the QA-hardened one):
+/// Activation UX contract (the QA-hardened one) — UNCHANGED:
 ///   * the network call never runs on the UI thread and never outlives a
 ///     45-second hard ceiling — even a hung DNS cannot spin the button forever,
 ///   * `busy` is reset in a finally-equivalent path, so NO throwable (Error
@@ -129,21 +131,29 @@ fun GateView() {
         }
     }
 
-    Box(Modifier.fillMaxSize().background(Honey.canvas)) {
+    Box(Modifier.fillMaxSize()) {
         Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 40.dp, vertical = 28.dp),
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 40.dp, vertical = 18.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            Text("🐝", fontSize = 44.sp)
-            Spacer(Modifier.height(6.dp))
-            Text("BEE-VPN", style = T.h1.copy(fontSize = 30.sp, color = Honey.primary))
+            // hero — the hive logo with its molten hexagon
+            com.beevpn.win.HiveLogo()
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "BEE-VPN",
+                style = T.h0.copy(
+                    fontSize = 32.sp,
+                    color = Honey.primary,
+                    shadow = androidx.compose.ui.graphics.Shadow(Honey.glow.copy(alpha = 0.6f), blurRadius = 24f),
+                ),
+            )
             Text("برای شروع، اشتراک خود را فعال کن", style = T.muted, modifier = Modifier.padding(top = 4.dp))
 
-            Spacer(Modifier.height(22.dp))
+            Spacer(Modifier.height(20.dp))
 
-            HoneyCard(Modifier.width(430.dp)) {
-                Column(Modifier.padding(4.dp)) {
+            GlassCard(Modifier.width(460.dp)) {
+                Column(Modifier.padding(2.dp)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         TabChip("🎟 کد فعال‌سازی", tab == 0, enabled = !busy) { tab = 0 }
                         TabChip("👤 حساب کاربری", tab == 1, enabled = !busy) { tab = 1 }
@@ -184,13 +194,24 @@ fun GateView() {
 
                     error?.let {
                         Spacer(Modifier.height(10.dp))
-                        HoneyCard(Modifier.fillMaxWidth()) {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(FieldShape)
+                                .background(Honey.danger.copy(alpha = 0.10f))
+                                .border(1.dp, Honey.danger.copy(alpha = 0.35f), FieldShape)
+                                .padding(12.dp),
+                        ) {
                             Column {
                                 Text(it, style = T.body.copy(color = Honey.danger, fontSize = 13.sp))
                                 Spacer(Modifier.height(8.dp))
                                 Text(
                                     "🔄 تلاش دوباره",
-                                    style = T.body.copy(color = Honey.primary, fontSize = 13.sp),
+                                    style = T.body.copy(
+                                        color = Honey.primary,
+                                        fontSize = 13.sp,
+                                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                                    ),
                                     modifier = Modifier.clickable(enabled = !busy) {
                                         error = null
                                         submit()
@@ -212,11 +233,15 @@ fun GateView() {
                     ) { submit() }
 
                     phase?.let {
-                        Spacer(Modifier.height(8.dp))
-                        Text(it, style = T.muted.copy(color = Honey.primary, fontSize = 12.sp))
+                        Spacer(Modifier.height(10.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Spinner(14.dp, Honey.primary)
+                            Spacer(Modifier.width(8.dp))
+                            Text(it, style = T.muted.copy(color = Honey.primary, fontSize = 12.sp))
+                        }
                     }
 
-                    Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(12.dp))
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         LinkText("🛍 خرید اشتراک", com.beevpn.win.config.BeeConfig.TELEGRAM_URL)
                         LinkText("🆘 پشتیبانی", com.beevpn.win.config.BeeConfig.SUPPORT_URL)
@@ -224,7 +249,7 @@ fun GateView() {
                 }
             }
 
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(14.dp))
             Text(
                 "شناسهٔ دستگاه: ${faDigits(LicenseManager.installId.take(12))}… (برای انتقال اشتراک با پشتیبانی تماس بگیر)",
                 style = T.muted,
@@ -236,15 +261,33 @@ fun GateView() {
 @Composable
 private fun TabChip(title: String, selected: Boolean, enabled: Boolean = true, onClick: () -> Unit) {
     val alpha = if (enabled) 1f else 0.45f
-    val bg = if (selected) Honey.primary.copy(alpha = 0.16f) else Honey.track
+    val bg: Brush = if (selected) {
+        Brush.verticalGradient(listOf(Honey.goldTop.copy(alpha = 0.28f * alpha), Honey.goldBot.copy(alpha = 0.18f * alpha)))
+    } else {
+        Brush.verticalGradient(listOf(Honey.track.copy(alpha = 0.9f), Honey.track.copy(alpha = 0.9f)))
+    }
     val fg = if (selected) Honey.primary else Honey.muted
     Box(
         Modifier
-            .background(bg.copy(alpha = alpha), RoundedCornerShape(10.dp))
-            .border(1.dp, if (selected) Honey.primary.copy(alpha = 0.5f * alpha) else Honey.divider, RoundedCornerShape(10.dp))
+            .clip(ChipShape)
+            .background(bg)
+            .border(
+                1.dp,
+                if (selected) Honey.primary.copy(alpha = 0.55f * alpha) else Honey.divider,
+                ChipShape,
+            )
             .clickable(enabled = enabled) { onClick() }
             .padding(horizontal = 14.dp, vertical = 8.dp),
-    ) { Text(title, style = T.body.copy(color = fg.copy(alpha = alpha), fontSize = 13.5.sp)) }
+    ) {
+        Text(
+            title,
+            style = T.body.copy(
+                color = fg.copy(alpha = alpha),
+                fontSize = 13.5.sp,
+                fontWeight = if (selected) androidx.compose.ui.text.font.FontWeight.Bold else androidx.compose.ui.text.font.FontWeight.Normal,
+            ),
+        )
+    }
 }
 
 @Composable
@@ -257,9 +300,10 @@ fun BeeField(
     focusRequester: FocusRequester? = null,
     onEnter: (() -> Unit)? = null,
 ) {
+    var focused by remember { mutableStateOf(false) }
     var modifier = Modifier
         .fillMaxWidth()
-        .height(44.dp)
+        .height(46.dp)
     if (focusRequester != null) modifier = modifier.focusRequester(focusRequester)
     if (onEnter != null) {
         modifier = modifier.onPreviewKeyEvent { e ->
@@ -282,27 +326,24 @@ fun BeeField(
         textStyle = T.body.copy(fontSize = 14.sp),
         cursorBrush = androidx.compose.ui.graphics.SolidColor(Honey.primary),
         modifier = modifier
-            .background(Honey.track, RoundedCornerShape(10.dp))
-            .border(1.dp, Honey.divider, RoundedCornerShape(10.dp))
-            .padding(horizontal = 12.dp, vertical = 11.dp),
+            .onFocusChanged { focused = it.isFocused }
+            .clip(FieldShape)
+            .background(
+                Brush.verticalGradient(
+                    listOf(Honey.track.copy(alpha = 0.95f), Honey.track.copy(alpha = 0.75f)),
+                ),
+            )
+            .border(
+                1.dp,
+                if (focused) Honey.primary.copy(alpha = 0.75f) else Honey.divider,
+                FieldShape,
+            )
+            .padding(horizontal = 12.dp, vertical = 12.dp),
         decorationBox = { inner ->
             Box(contentAlignment = Alignment.CenterStart) {
                 if (value.isEmpty()) Text(hint, style = T.muted)
                 inner()
             }
-        },
-    )
-}
-
-@Composable
-fun LinkText(label: String, url: String) {
-    Text(
-        label,
-        style = T.body.copy(color = Honey.primary, fontSize = 13.sp),
-        modifier = Modifier.clickable {
-            try {
-                Desktop.getDesktop().browse(URI(url))
-            } catch (_: Exception) {}
         },
     )
 }

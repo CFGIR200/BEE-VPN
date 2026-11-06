@@ -1,5 +1,8 @@
 package com.beevpn.win.ui
 
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -10,7 +13,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -24,6 +29,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -35,8 +43,7 @@ import com.beevpn.win.tunnel.TunnelController
 import com.beevpn.win.warp.WarpProvisioner
 
 /// The workbench: elevation, Smart Split (fragment) toggle, manual wg-quick,
-/// link import, identity regenerate, and the engine log tail. The desktop
-/// twin of the iOS Advanced tab plus the pieces desktop buyers actually need.
+/// link import, identity regenerate, and the engine log tail — all on glass.
 @Composable
 fun AdvancedView() {
     var fragment by remember { mutableStateOf(TunnelController.fragmentOnDirect) }
@@ -47,12 +54,11 @@ fun AdvancedView() {
     var importMsg by remember { mutableStateOf<String?>(null) }
     val admin = remember { WindowsAdmin.isAdmin() }
 
-    Column(Modifier.fillMaxSize().background(Honey.canvas).verticalScroll(rememberScrollState()).padding(horizontal = 36.dp, vertical = 22.dp)) {
-        Text("پیشرفته", style = T.h2)
-        Spacer(Modifier.height(12.dp))
-
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 30.dp, vertical = 6.dp),
+    ) {
         if (!admin) {
-            HoneyCard(Modifier.width(680.dp)) {
+            GlassCard(Modifier.width(720.dp)) {
                 Column {
                     Text("⛔ برنامه با دسترسی مدیر اجرا نشده است", style = T.body.copy(color = Honey.danger))
                     Text("ساخت تونل VPN و مسیردهی کامل ترافیک به دسترسی مدیر نیاز دارد؛ در غیر این صورت «اتصال» ناموفق می‌شود.", style = T.muted)
@@ -71,10 +77,10 @@ fun AdvancedView() {
         }
 
         // Smart Split / fragment
-        HoneyCard(Modifier.width(680.dp)) {
+        GlassCard(Modifier.width(720.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Smart Split (فرگمنت TLS)", style = T.body)
+                    Text("Smart Split (فرگمنت TLS)", style = T.body.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold))
                     Text(
                         "قطعه‌قطعه کردن ClientHello برای عبور از DPI — همان سازوکار اندروید، روی مسیر مستقیم",
                         style = T.muted,
@@ -89,19 +95,12 @@ fun AdvancedView() {
         Spacer(Modifier.height(12.dp))
 
         // Manual wg-quick
-        HoneyCard(Modifier.width(680.dp)) {
+        GlassCard(Modifier.width(720.dp)) {
             Column {
-                Text("کانفیگ دستی wg-quick (WARP دستی)", style = T.body)
+                Text("کانفیگ دستی wg-quick (WARP دستی)", style = T.body.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold))
                 Text("مثل تب پیشرفتهٔ iOS: کلید خصوصی، Address، PublicKey و Endpoint لازم است", style = T.muted)
                 Spacer(Modifier.height(8.dp))
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(120.dp)
-                        .background(Honey.track, RoundedCornerShape(10.dp))
-                        .border(1.dp, Honey.divider, RoundedCornerShape(10.dp))
-                        .padding(8.dp),
-                ) {
+                DarkInsetBox(height = 120.dp) {
                     androidx.compose.foundation.text.BasicTextField(
                         value = manual,
                         onValueChange = { manual = it },
@@ -125,19 +124,12 @@ fun AdvancedView() {
         Spacer(Modifier.height(12.dp))
 
         // Link import
-        HoneyCard(Modifier.width(680.dp)) {
+        GlassCard(Modifier.width(720.dp)) {
             Column {
-                Text("ورود دستی کانفیگ‌ها", style = T.body)
+                Text("ورود دستی کانفیگ‌ها", style = T.body.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold))
                 Text("هر خط یک لینک: vless:// trojan:// ss:// hysteria2:// anytls:// vmess://", style = T.muted)
                 Spacer(Modifier.height(8.dp))
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(90.dp)
-                        .background(Honey.track, RoundedCornerShape(10.dp))
-                        .border(1.dp, Honey.divider, RoundedCornerShape(10.dp))
-                        .padding(8.dp),
-                ) {
+                DarkInsetBox(height = 90.dp) {
                     androidx.compose.foundation.text.BasicTextField(
                         value = importText,
                         onValueChange = { importText = it },
@@ -159,14 +151,18 @@ fun AdvancedView() {
                         importText = ""
                     }
                 }
-                importMsg?.let { Text(it, style = T.muted.copy(color = Honey.primary)) }
+                importMsg?.let {
+                    Spacer(Modifier.height(6.dp))
+                    Text(it, style = T.muted.copy(color = Honey.primary))
+                }
             }
         }
         Spacer(Modifier.height(12.dp))
 
         // Engine info
-        HoneyCard(Modifier.width(680.dp)) {
+        GlassCard(Modifier.width(720.dp)) {
             Column {
+                SectionHeader("موتور و مسیرها")
                 InfoRow("پوشهٔ موتورها", AppPaths.coresDir()?.path ?: "پیدا نشد (xray.exe / sing-box.exe)", AppPaths.coresDir()?.let { Honey.ok } ?: Honey.danger)
                 InfoRow("SOCKS محلی", "127.0.0.1:${com.beevpn.win.engine.EngineConfig.SOCKS_PORT} (همان پورت اندروید)")
                 InfoRow("سایدکار AnyTLS", "127.0.0.1:${com.beevpn.win.engine.EngineConfig.ANYTLS_SIDECAR_PORT}")
@@ -176,10 +172,10 @@ fun AdvancedView() {
         Spacer(Modifier.height(12.dp))
 
         // Log tail
-        HoneyCard(Modifier.width(680.dp)) {
+        GlassCard(Modifier.width(720.dp)) {
             Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("گزارش پیشرفته", style = T.body)
+                    Text("گزارش پیشرفته", style = T.body.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold))
                     Spacer(Modifier.weight(1f))
                     Text(
                         "↻ بروزرسانی",
@@ -192,14 +188,7 @@ fun AdvancedView() {
                     )
                 }
                 Spacer(Modifier.height(8.dp))
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(180.dp)
-                        .background(Color(0xFF060A0E), RoundedCornerShape(10.dp))
-                        .border(1.dp, Honey.divider, RoundedCornerShape(10.dp))
-                        .padding(8.dp),
-                ) {
+                DarkInsetBox(height = 180.dp) {
                     androidx.compose.foundation.text.BasicTextField(
                         value = logText,
                         onValueChange = {},
@@ -219,6 +208,23 @@ fun AdvancedView() {
     }
 }
 
+/// The dark inset well for code/log text — a sunk obsidian block.
+@Composable
+private fun DarkInsetBox(height: androidx.compose.ui.unit.Dp, content: @Composable () -> Unit) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(height)
+            .shadow(6.dp, RoundedCornerShape(11.dp), ambientColor = Color.Black.copy(alpha = 0.6f))
+            .clip(RoundedCornerShape(11.dp))
+            .background(
+                Brush.verticalGradient(listOf(Color(0xFF070B10), Color(0xFF0A0F15))),
+            )
+            .border(1.dp, Color.Black.copy(alpha = 0.55f), RoundedCornerShape(11.dp))
+            .padding(10.dp),
+    ) { content() }
+}
+
 /// Extra imported links survive restarts in their own file, appended to the
 /// subscription cache — separate from the publisher's body so refreshes never
 /// lose user pins.
@@ -229,25 +235,46 @@ private fun persistExtraLinks(text: String) {
     } catch (_: Exception) {}
 }
 
+/// The 3D switch — a sunk obsidian track, a knob with its own drop shadow
+/// that glides on a spring, and a honey glow when on.
 @Composable
 fun SwitchHoney(checked: Boolean, onChange: (Boolean) -> Unit) {
-    val w = 46.dp
-    val h = 26.dp
+    val w = 52.dp
+    val h = 28.dp
+    val knobTravel = w - 28.dp
+    val knobX by animateDpAsState(
+        if (checked) knobTravel else 0.dp,
+        spring(dampingRatio = 0.65f, stiffness = Spring.StiffnessMediumLow),
+        label = "knob",
+    )
     Box(
         Modifier
             .width(w)
             .height(h)
-            .background(if (checked) Honey.primary else Honey.track, RoundedCornerShape(h / 2))
-            .border(1.dp, if (checked) Honey.primary else Honey.divider, RoundedCornerShape(h / 2))
+            .clip(RoundedCornerShape(h / 2))
+            .background(
+                if (checked) Brush.verticalGradient(listOf(Honey.goldTop, Honey.goldBot))
+                else Brush.verticalGradient(listOf(Color(0xFF0A0F14), Honey.track)),
+            )
+            .border(
+                1.dp,
+                if (checked) Honey.primary.copy(alpha = 0.5f) else Honey.divider,
+                RoundedCornerShape(h / 2),
+            )
             .clickable { onChange(!checked) },
-        contentAlignment = if (checked) Alignment.CenterStart else Alignment.CenterEnd,
+        contentAlignment = Alignment.CenterStart,
     ) {
         Box(
             Modifier
+                .offset(x = knobX)
                 .padding(3.dp)
-                .height(20.dp)
-                .width(20.dp)
-                .background(if (checked) Color(0xFF1A1200) else Honey.muted, RoundedCornerShape(10.dp)),
+                .size(22.dp)
+                .shadow(6.dp, RoundedCornerShape(11.dp), spotColor = Color.Black.copy(alpha = 0.6f))
+                .background(
+                    if (checked) Brush.verticalGradient(listOf(Color.White, Color(0xFFEAEAEA)))
+                    else Brush.verticalGradient(listOf(Honey.muted, Honey.divider)),
+                    RoundedCornerShape(11.dp),
+                ),
         )
     }
 }

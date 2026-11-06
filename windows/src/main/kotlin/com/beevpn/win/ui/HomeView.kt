@@ -1,6 +1,11 @@
 package com.beevpn.win.ui
 
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,11 +15,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -24,7 +29,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.beevpn.win.faNum
@@ -32,53 +40,74 @@ import com.beevpn.win.daysLeftHuman
 import com.beevpn.win.license.LicenseManager
 import com.beevpn.win.tunnel.TunnelController
 
-/// Home — the honey orb, the transport picker and the connect switch.
-/// The desktop twin of HomeView.swift / the Android orbit screen.
+/// Home — the honey orb on its obsidian stage, the glowing status line, the
+/// transport segmented control and the hive pass banner. The desktop twin of
+/// HomeView.swift / the Android orbit screen.
 @Composable
 fun HomeView() {
     val state = TunnelController.state
     val info = LicenseManager.subscriptionInfo()
 
-    Box(Modifier.fillMaxSize().background(Honey.canvas)) {
+    val statusColor = when (state) {
+        TunnelController.State.CONNECTED -> Honey.ok
+        TunnelController.State.FAILED -> Honey.danger
+        TunnelController.State.STARTING, TunnelController.State.PROVISIONING,
+        TunnelController.State.VERIFYING, TunnelController.State.STOPPING,
+        -> Honey.primary
+        else -> Honey.ink
+    }
+
+    Box(Modifier.fillMaxSize()) {
         Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 36.dp, vertical = 22.dp),
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 36.dp, vertical = 4.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Spacer(Modifier.height(4.dp))
-            Orb(state)
-            Spacer(Modifier.height(8.dp))
+            Orb(state, onToggle = {
+                if (state == TunnelController.State.CONNECTED) TunnelController.disconnect() else TunnelController.connect()
+            })
+            Spacer(Modifier.height(2.dp))
 
             Text(
                 TunnelController.statusText,
-                style = T.h2.copy(
-                    color = when (state) {
-                        TunnelController.State.CONNECTED -> Honey.ok
-                        TunnelController.State.FAILED -> Honey.danger
-                        TunnelController.State.STARTING, TunnelController.State.PROVISIONING,
-                        TunnelController.State.VERIFYING, TunnelController.State.STOPPING -> Honey.primary
-                        else -> Honey.ink
-                    },
+                style = T.h0.copy(
+                    color = statusColor,
+                    shadow = Shadow(statusColor.copy(alpha = 0.65f), blurRadius = 22f),
                 ),
             )
             TunnelController.lastError?.let { err ->
-                Spacer(Modifier.height(6.dp))
-                Text(err, style = T.muted.copy(color = Honey.danger, fontSize = 13.sp))
-                if (err.contains("مدیر")) {
-                    Spacer(Modifier.height(8.dp))
-                    HoneyButton(title = "اجرای دوباره با دسترسی مدیر", filled = false) {
-                        com.beevpn.win.engine.WindowsAdmin.relaunchElevated()
+                Spacer(Modifier.height(8.dp))
+                GlassCard(Modifier.width(470.dp)) {
+                    Column {
+                        Text(err, style = T.body.copy(color = Honey.danger, fontSize = 13.sp))
+                        if (err.contains("مدیر")) {
+                            Spacer(Modifier.height(8.dp))
+                            HoneyButton(title = "اجرای دوباره با دسترسی مدیر", filled = false) {
+                                com.beevpn.win.engine.WindowsAdmin.relaunchElevated()
+                            }
+                        }
                     }
                 }
             }
 
             // Subscription banner — the days-left line from the buyer's own hive pass.
             if (info.hasToken) {
-                Spacer(Modifier.height(10.dp))
-                HoneyCard(Modifier.width(430.dp)) {
+                Spacer(Modifier.height(12.dp))
+                GlassCard(Modifier.width(470.dp)) {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text("💎", fontSize = 18.sp)
-                        Spacer(Modifier.width(10.dp))
-                        Column {
+                        Box(
+                            Modifier
+                                .size(38.dp)
+                                .clip(RoundedCornerShape(11.dp))
+                                .background(
+                                    Brush.verticalGradient(
+                                        listOf(Honey.primary.copy(alpha = 0.22f), Honey.goldBot.copy(alpha = 0.12f)),
+                                    ),
+                                )
+                                .border(1.dp, Honey.primary.copy(alpha = 0.35f), RoundedCornerShape(11.dp)),
+                            contentAlignment = Alignment.Center,
+                        ) { Text("💎", fontSize = 16.sp) }
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
                             Text(
                                 "اشتراک فعال — " + faNum(
                                     ((info.expiryEpochSec - System.currentTimeMillis() / 1000) / 86_400).toInt() + 1
@@ -87,8 +116,7 @@ fun HomeView() {
                             )
                             Text("پلن: " + planLabel(info.plan), style = T.muted)
                         }
-                        Spacer(Modifier.weight(1f))
-                        Text(daysLeftHuman(info.expiryEpochSec, System.currentTimeMillis() / 1000), style = T.accent.copy(fontSize = 13.sp))
+                        GlassChip(daysLeftHuman(info.expiryEpochSec, System.currentTimeMillis() / 1000))
                     }
                 }
             }
@@ -96,7 +124,7 @@ fun HomeView() {
             Spacer(Modifier.height(14.dp))
             ModeRow()
 
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(14.dp))
             val busy = state == TunnelController.State.STARTING || state == TunnelController.State.PROVISIONING ||
                 state == TunnelController.State.VERIFYING || state == TunnelController.State.STOPPING
             HoneyButton(
@@ -105,7 +133,7 @@ fun HomeView() {
                     else -> "اتصال"
                 },
                 filled = true,
-                modifier = Modifier.width(430.dp),
+                modifier = Modifier.width(470.dp),
                 busy = busy,
                 enabled = !busy,
             ) {
@@ -120,45 +148,71 @@ fun HomeView() {
                 )
             }
 
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(10.dp))
             Text("ربات فروش و خرید اشتراک: @BEESELL_GP", style = T.muted)
+            Spacer(Modifier.height(14.dp))
         }
     }
 }
 
+/// The transport segmented control — four modes in one glass rail, the chosen
+/// one carried by a molten gold pill that glides between positions.
 @Composable
 private fun ModeRow() {
     var selected by remember(TunnelController.mode) { mutableStateOf(TunnelController.mode) }
     val items = listOf(
         TunnelController.Mode.AUTO to "⚡ خودکار",
-        TunnelController.Mode.SHARD to "🕸 SHARD",
+        TunnelController.Mode.SHARD to "◈ SHARD",
         TunnelController.Mode.WARP to "☁ WARP",
         TunnelController.Mode.MANUAL to "✍ دستی",
     )
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        items.forEach { (m, label) ->
-            val on = selected == m
-            Box(
-                Modifier
-                    .background(
-                        if (on) Honey.primary.copy(alpha = 0.16f) else Honey.surface,
-                        RoundedCornerShape(10.dp),
-                    )
-                    .border(1.dp, if (on) Honey.primary.copy(alpha = 0.5f) else Honey.divider, RoundedCornerShape(10.dp))
-                    .clickable {
-                        selected = m
-                        TunnelController.mode = m
-                    }
-                    .padding(horizontal = 14.dp, vertical = 8.dp),
-            ) {
-                Text(
-                    label,
-                    style = T.body.copy(
-                        color = if (on) Honey.primary else Honey.muted,
-                        fontSize = 13.sp,
-                        fontWeight = if (on) androidx.compose.ui.text.font.FontWeight.Bold else androidx.compose.ui.text.font.FontWeight.Normal,
-                    ),
+    val segW = 96.dp
+    val pillX by animateDpAsState(
+        segW * items.indexOfFirst { it.first == selected },
+        spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow),
+        label = "modePill",
+    )
+
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(15.dp))
+            .background(Honey.track.copy(alpha = 0.9f))
+            .border(1.dp, Honey.divider, RoundedCornerShape(15.dp))
+            .padding(4.dp),
+    ) {
+        Box(
+            Modifier
+                .offset(x = pillX)
+                .width(segW)
+                .height(36.dp)
+                .clip(RoundedCornerShape(11.dp))
+                .background(
+                    Brush.verticalGradient(listOf(Honey.goldTop, Honey.goldBot)),
                 )
+                .border(1.dp, Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.45f), Color.Transparent)), RoundedCornerShape(11.dp)),
+        )
+        Row {
+            items.forEach { (m, label) ->
+                val on = selected == m
+                Box(
+                    Modifier
+                        .width(segW)
+                        .height(36.dp)
+                        .clickable {
+                            selected = m
+                            TunnelController.mode = m
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        label,
+                        style = T.body.copy(
+                            color = if (on) Honey.onGold else Honey.muted,
+                            fontSize = 12.5.sp,
+                            fontWeight = if (on) androidx.compose.ui.text.font.FontWeight.Bold else androidx.compose.ui.text.font.FontWeight.Normal,
+                        ),
+                    )
+                }
             }
         }
     }

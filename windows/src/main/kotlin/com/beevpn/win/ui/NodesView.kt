@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -19,10 +20,16 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.beevpn.win.faDigits
@@ -36,15 +43,16 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /// The SHARD pool — the same subscription the Android app syncs, ranked by
-/// live TCP latency. Tap to pin a node; the engine always prefers the pin.
+/// live TCP latency. Each node is a glass tile with a latency lamp on the
+/// edge; tap the star to pin a node, the engine always prefers the pin.
 @Composable
 fun NodesView() {
-    var probing by androidx.compose.runtime.remember { mutableStateOf(false) }
-    var results by androidx.compose.runtime.remember { mutableStateOf<List<ShardProber.Result>>(TunnelController.lastProbed) }
-    var pinned by androidx.compose.runtime.remember { mutableStateOf(TunnelController.pinnedNodeKey) }
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var probing by remember { mutableStateOf(false) }
+    var results by remember { mutableStateOf<List<ShardProber.Result>>(TunnelController.lastProbed) }
+    var pinned by remember { mutableStateOf(TunnelController.pinnedNodeKey) }
+    val scope = rememberCoroutineScope()
 
-    Column(Modifier.fillMaxSize().background(Honey.canvas).padding(horizontal = 36.dp, vertical = 22.dp)) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 30.dp, vertical = 6.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("نودهای SHARD", style = T.h2)
             Spacer(Modifier.weight(1f))
@@ -85,7 +93,7 @@ fun NodesView() {
 
         LazyColumn(Modifier.fillMaxSize()) {
             items(results.ifEmpty { TunnelController.nodePool.map { ShardProber.Result(it, -2) } }) { r ->
-                NodeRow(
+                NodeTile(
                     profile = r.profile,
                     latency = r.latencyMs,
                     pinned = pinned == r.profile.key(),
@@ -101,19 +109,51 @@ fun NodesView() {
 }
 
 @Composable
-private fun NodeRow(profile: ShardProfile, latency: Int, pinned: Boolean, onPin: () -> Unit) {
-    val bg = if (pinned) Honey.primary.copy(alpha = 0.10f) else Honey.surface
-    HoneyCard(
+private fun NodeTile(profile: ShardProfile, latency: Int, pinned: Boolean, onPin: () -> Unit) {
+    val (lamp, latText) = when {
+        latency == -2 -> Honey.muted to "—"
+        latency < 0 -> Honey.danger to "بی‌پاسخ"
+        latency < 300 -> Honey.ok to faNum(latency) + " ms"
+        latency < 900 -> Honey.goldTop to faNum(latency) + " ms"
+        else -> Honey.danger to faNum(latency) + " ms"
+    }
+    Box(
         Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp)
-            .background(bg, RoundedCornerShape(14.dp)),
+            .padding(vertical = 5.dp)
+            .shadow(
+                12.dp,
+                CardShape,
+                ambientColor = Color.Black.copy(alpha = 0.5f),
+                spotColor = if (pinned) Honey.glow.copy(alpha = 0.22f) else Color.Transparent,
+            )
+            .clip(CardShape)
+            .background(
+                Brush.verticalGradient(
+                    if (pinned) listOf(Honey.primary.copy(alpha = 0.12f), Honey.surface.copy(alpha = 0.90f))
+                    else listOf(Honey.surfaceHi.copy(alpha = 0.92f), Honey.surface.copy(alpha = 0.86f)),
+                ),
+            )
+            .border(
+                1.dp,
+                if (pinned) Honey.primary.copy(alpha = 0.45f) else Honey.glassEdgeTop.copy(alpha = 0.6f),
+                CardShape,
+            )
+            .clickable { onPin() }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            // latency lamp
+            Box(
+                Modifier
+                    .size(10.dp)
+                    .background(lamp, RoundedCornerShape(5.dp)),
+            )
+            Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
                     profile.displayLabel(),
-                    style = T.body.copy(fontSize = 13.5.sp),
+                    style = T.body.copy(fontSize = 13.5.sp, fontWeight = FontWeight.Bold),
                     maxLines = 1,
                 )
                 Text(
@@ -123,16 +163,11 @@ private fun NodeRow(profile: ShardProfile, latency: Int, pinned: Boolean, onPin:
                     maxLines = 1,
                 )
             }
-            val (latText, latColor) = when {
-                latency == -2 -> "—" to Honey.muted
-                latency < 0 -> "بی‌پاسخ" to Honey.danger
-                else -> faNum(latency) + " ms" to Honey.ok
-            }
-            Text(latText, style = T.body.copy(color = latColor, fontSize = 12.5.sp))
-            Spacer(Modifier.width(10.dp))
+            GlassChip(latText, color = lamp)
+            Spacer(Modifier.width(12.dp))
             Text(
                 if (pinned) "★" else "☆",
-                fontSize = 17.sp,
+                fontSize = 19.sp,
                 color = if (pinned) Honey.primary else Honey.muted,
                 modifier = Modifier.clickable { onPin() },
             )
