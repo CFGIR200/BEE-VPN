@@ -57,6 +57,7 @@ object LicenseManager {
     private const val K_KIND = "kind"          // code | account
     private const val K_SUBJECT = "subject"    // code or username, for display
     private const val K_LAST_CHECK = "last_check"
+    private const val K_ACTIVATED_AT = "activated_at"  // local first-activation time (epoch sec)
     private const val TOKEN_KEY = "license_token"   // stored via SecureStore (AES/GCM)
 
     private const val VERIFY_INTERVAL_SEC = 12 * 60 * 60L
@@ -71,6 +72,21 @@ object LicenseManager {
         val kind: String,
         val expiryEpochSec: Long,
         val reason: String,   // "unconfigured" | "none" | "invalid" | "device" | "expired" | ""
+        val plan: String = "",  // token payload p: trial | m1 | m3 | m6 | m12
+    )
+
+    /** Everything the in-app profile screen shows, gathered in one read. */
+    data class SubscriptionInfo(
+        val configured: Boolean,
+        val active: Boolean,
+        val expired: Boolean,
+        val subject: String,           // code or username
+        val kind: String,              // code | account
+        val plan: String,              // trial | m1 | m3 | m6 | m12 | ""
+        val expiryEpochSec: Long,
+        val activatedAtEpochSec: Long, // 0 = never activated on this install
+        val lastCheckEpochSec: Long,   // 0 = server never re-checked yet
+        val installId: String,
     )
 
     // ------------------------------------------------------------------ state
@@ -115,6 +131,29 @@ object LicenseManager {
             payload.optString("k", "code"),
             expiry,
             "",
+            payload.optString("p"),
+        )
+    }
+
+    /**
+     * The full subscription card for the profile screen. Reads the same local
+     * state the gate checks — no network: the token's payload already carries
+     * plan and expiry, and the prefs carry the times.
+     */
+    fun subscriptionInfo(context: Context): SubscriptionInfo {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val e = entitlement(context)
+        return SubscriptionInfo(
+            configured = configured(),
+            active = e.entitled,
+            expired = e.reason == "expired",
+            subject = e.subject.ifBlank { prefs.getString(K_SUBJECT, "").orEmpty() },
+            kind = e.kind.ifBlank { prefs.getString(K_KIND, "").orEmpty() },
+            plan = e.plan,
+            expiryEpochSec = e.expiryEpochSec,
+            activatedAtEpochSec = prefs.getLong(K_ACTIVATED_AT, 0L),
+            lastCheckEpochSec = prefs.getLong(K_LAST_CHECK, 0L),
+            installId = instanceId(context),
         )
     }
 
@@ -134,7 +173,8 @@ object LicenseManager {
     fun signOut(context: Context) {
         SecureStore.removeSecret(context, TOKEN_KEY)
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .remove(K_SUBJECT).remove(K_KIND).remove(K_LAST_CHECK).apply()
+            .remove(K_SUBJECT).remove(K_KIND).remove(K_LAST_CHECK)
+            .remove(K_ACTIVATED_AT).apply()
     }
 
     // -------------------------------------------------------------- activate
@@ -248,11 +288,18 @@ object LicenseManager {
 
     private fun store(context: Context, token: String, subject: String, kind: String) {
         SecureStore.putSecret(context, TOKEN_KEY, token)
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        prefs.edit()
             .putString(K_SUBJECT, subject)
             .putString(K_KIND, kind)
             .putLong(K_LAST_CHECK, System.currentTimeMillis() / 1000)
             .apply()
+        // First time this install ever held a token ≈ activation time. Kept
+        // across revalidates (which call store() too), cleared only by
+        // signOut() — so the profile screen can show how long the term ran.
+        if (!prefs.contains(K_ACTIVATED_AT)) {
+            prefs.edit().putLong(K_ACTIVATED_AT, System.currentTimeMillis() / 1000).apply()
+        }
     }
 
     private fun httpClient(): OkHttpClient = OkHttpClient.Builder()

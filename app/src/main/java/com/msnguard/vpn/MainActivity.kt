@@ -3290,6 +3290,20 @@ class MainActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
         ).apply { topMargin = dp(26) })
+        // SUBSCRIPTION sits right under the VPN profile: the buyer's most
+        // common post-purchase question is "when does my subscription end?",
+        // and the answer lives one row away from everything else they tune.
+        content.addView(expandableSection(Strings.t("SUBSCRIPTION"), id = "SUBSCRIPTION") { body ->
+            body.addView(navRow(Strings.t("Subscription"), subscriptionSummary()) {
+                startActivity(Intent(this, SubscriptionInfoActivity::class.java))
+            }, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(10) })
+        }, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        ).apply { topMargin = dp(26) })
         content.addView(expandableSection(Strings.t("PROTECTION"), id = "PROTECTION") { body ->
             body.addView(createToggleRow(Strings.t("Kill switch"), Strings.t("Block all traffic if the tunnel drops"), killSwitchEnabled()) {
                 preferences().edit().putBoolean(KILL_SWITCH, it).apply()
@@ -9624,6 +9638,18 @@ class MainActivity : Activity() {
     /** A stable id from a section key, used as its expansion-state key. */
     private fun sectionId(title: String): String =
         title.lowercase().replace(Regex("[^a-z0-9]+"), "_").trim('_')
+
+    /**
+     * The one-line subscription state for the settings row: days left in
+     * Persian digits, or a short "not active" nudge. Reads local state only —
+     * cheap enough to call on every settings rebuild.
+     */
+    private fun subscriptionSummary(): String {
+        if (!LicenseManager.configured()) return Strings.t("Not active")
+        val e = LicenseManager.entitlement(this)
+        return if (e.entitled) daysLeftSummary(LicenseManager.daysRemaining(this))
+        else Strings.t("Not active")
+    }
 
     /** A sculpted navigation row: title on the left, current value on the right. */
     private fun navRow(

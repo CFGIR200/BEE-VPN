@@ -93,6 +93,16 @@
             </intent-filter>
         </activity>
 
+        <!-- In-app subscription profile (Settings → SUBSCRIPTION). Reads the
+             locally stored entitlement token only — never talks to the network
+             itself, so it renders instantly and offline. -->
+        <activity
+            android:name=".SubscriptionInfoActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:theme="@style/Theme.BeeGuard" />
+
         <!--
           Invisible helper whose only job is to let the QS tile collapse the shade.
           Own taskAffinity so it never stacks on top of MainActivity; noHistory +
