@@ -28,6 +28,10 @@ targets:
     platform: iOS
     sources:
       - path: BEE-VPN
+        excludes:
+          # Template only — gen-config.sh consumes it on disk; it must not be
+          # bundled into the app as a resource.
+          - "License/Config.swift.in"
     preBuildScripts:
       - path: Scripts/gen-config.sh
         name: Generate Config.swift
