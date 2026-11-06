@@ -1,0 +1,84 @@
+name: Windows build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "windows/**"
+      - ".github/workflows/windows.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # ── Vendored engines, pinned + checksum-verified ─────────────────────
+      - name: Vendor cores (xray + sing-box + wintun)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Invoke-WebRequest -Uri "https://github.com/XTLS/Xray-core/releases/download/v26.10.21/Xray-windows-64.zip" -OutFile xray.zip
+          $h = (Get-FileHash xray.zip -Algorithm SHA256).Hash.ToLower()
+          if ($h -ne "fc58c39ee2f2717b4c54d28d374362389e5319b20ae44aea76ea45a5243ec827") { throw "xray zip checksum mismatch: $h" }
+          Expand-Archive xray.zip -DestinationPath xraysrc
+
+          Invoke-WebRequest -Uri "https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-windows-amd64.zip" -OutFile sb.zip
+          $h = (Get-FileHash sb.zip -Algorithm SHA256).Hash.ToLower()
+          if ($h -ne "99185d75d314a07dbba4a130c8ad986cbeb629a07927975636b341ca61f991df") { throw "sing-box zip checksum mismatch: $h" }
+          Expand-Archive sb.zip -DestinationPath sbsrc
+
+          New-Item -ItemType Directory -Force -Path windows/resources-cores/cores | Out-Null
+          Copy-Item xraysrc/xray.exe    windows/resources-cores/cores/
+          Copy-Item xraysrc/geoip.dat   windows/resources-cores/cores/
+          Copy-Item xraysrc/geosite.dat windows/resources-cores/cores/
+          Copy-Item xraysrc/wintun.dll  windows/resources-cores/cores/
+          Copy-Item sbsrc/sing-box-1.14.4-windows-amd64/sing-box.exe windows/resources-cores/cores/
+          Get-ChildItem windows/resources-cores/cores | Format-Table Name, Length
+
+      - name: Build (MSI + distributable app image)
+        shell: pwsh
+        working-directory: windows
+        env:
+          BEE_LICENSE_URL: ${{ secrets.BEE_LICENSE_URL }}
+          BEE_LICENSE_PUBKEY_B64: ${{ secrets.BEE_LICENSE_PUBKEY_B64 }}
+          BEE_TELEGRAM_URL: ${{ secrets.BEE_TELEGRAM_URL }}
+          BEE_SUPPORT_URL: ${{ secrets.BEE_SUPPORT_URL }}
+        run: |
+          .\gradlew.bat packageMsi createDistributable --no-daemon
+
+      # ── Portable zip: the self-contained app image + launcher ────────────
+      - name: Assemble portable zip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $app = "windows/build/compose/binaries/main/app/BEE-VPN"
+          Get-ChildItem $app | Format-Table Name, Length
+          # cores travel inside the app image (resources dir), verify:
+          $resDir = Get-ChildItem "$app/app" -Directory | Where-Object { Test-Path "$($_.FullName)/cores/xray.exe" } | Select-Object -First 1
+          if (-not $resDir) { throw "cores did not land in the app image" }
+          Copy-Item windows/BEE-VPN.bat "$app/BEE-VPN.bat"
+          Copy-Item windows/README-FA.txt "$app/README-FA.txt"
+          Compress-Archive -Path $app -DestinationPath BEE-VPN-1.0.0-portable-x64.zip
+
+      - name: Upload MSI
+        uses: actions/upload-artifact@v4
+        with:
+          name: BEE-VPN-1.0.0-msi-x64
+          path: windows/build/compose/binaries/main-msi/*.msi
+          if-no-files-found: error
+
+      - name: Upload portable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: BEE-VPN-1.0.0-portable-x64
+          path: BEE-VPN-1.0.0-portable-x64.zip
+          if-no-files-found: error
