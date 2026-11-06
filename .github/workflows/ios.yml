@@ -25,17 +25,11 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Build WireGuard Go bridge (libwg-go.a)
+      - name: Prepare WireGuardKit + build Go bridge (libwg-go.a)
+        working-directory: ios
         run: |
-          git clone --depth 1 --branch 1.0.16-27 \
-            https://github.com/WireGuard/wireguard-apple.git \
-            "$GITHUB_WORKSPACE/wireguard-apple"
-          export PLATFORM_NAME=iphoneos
-          export SDKROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
-          export ARCHS="arm64"
-          make -C "$GITHUB_WORKSPACE/wireguard-apple/Sources/WireGuardKitGo" \
-            -j"$(sysctl -n hw.ncpu)"
-          ls -la "$GITHUB_WORKSPACE/wireguard-apple/Sources/WireGuardKitGo/out"
+          chmod +x Scripts/prepare-wireguard.sh
+          ./Scripts/prepare-wireguard.sh
 
       - name: Inject build configuration (license server, links)
         working-directory: ios

@@ -31,13 +31,11 @@
 ### راه ۲: روی مک
 
 ```bash
-# ابزارها: Xcode 15+ و Go
+# ابزارها: Xcode 15+ (یا 26) و Go
 brew install xcodegen go
 
-# ۱) پل Go وایرگارد را بساز (فقط بار اول؛ خروجی: out/libwg-go.a)
-git clone --depth 1 --branch 1.0.16-27 https://github.com/WireGuard/wireguard-apple.git ../wireguard-apple
-export PLATFORM_NAME=iphoneos SDKROOT="$(xcrun --sdk iphoneos --show-sdk-path)" ARCHS="arm64"
-make -C ../wireguard-apple/Sources/WireGuardKitGo -j8
+# ۱) وایرگارد را آماده کن (کلون + ساخت پل Go: out/libwg-go.a)
+./Scripts/prepare-wireguard.sh
 
 # ۲) کانفیگ را تزریق و پروژه را بساز
 ./Scripts/gen-config.sh
