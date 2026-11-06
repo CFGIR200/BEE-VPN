@@ -148,7 +148,7 @@ final class LicenseManager: ObservableObject {
             } catch LicenseError.server(let message) {
                 if message == "revoked" || message == "expired" {
                     // The server says no — the offline clock must not override it.
-                    self.state = .locked(reason: (error as? LicenseError)?.errorDescription)
+                    self.state = .locked(reason: LicenseError.server(message).errorDescription)
                 }
             } catch {
                 // network trouble: keep the offline verdict

@@ -82,6 +82,8 @@ struct HomeView: View {
 }
 
 /// One shared controller so the tab and any sheet see the same status.
+/// TunnelController is @MainActor, so the holder must be too.
+@MainActor
 final class TunnelControllerHolder {
     static let shared = TunnelController()
 }
