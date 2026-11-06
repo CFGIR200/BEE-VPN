@@ -197,6 +197,11 @@ ok(prof.includes('باقی‌مانده'), 'روزهای باقی‌مانده �
 ok(prof.includes('در جریان'), 'خلاصهٔ اشتراک در جریان');
 ok(await drive(cb(424242, 'mysub')) === 200 && lastSentTo(424242).includes('هنوز اشتراکی نداری'), 'پروفایل کاربر بدون اشتراک');
 
+section('T14b — کامند /profile (همان کارت دکمهٔ پروفایل)');
+ok(await drive(textMsg(905556034, '/profile')) === 200, '/profile → 200');
+ok(lastSentTo(905556034).includes('پروفایل تو در کندو'), 'کارت پروفایل با کامند هم آمد');
+ok(await drive(textMsg(111, '/profile')) === 200, '/profile ادمین → 200');
+
 section('T15 — پنل مدیریت /admin');
 ok(await drive(textMsg(111, '/admin')) === 200, '/admin → 200');
 const panelMsg = sentTo(111).at(-1)?.body || {};

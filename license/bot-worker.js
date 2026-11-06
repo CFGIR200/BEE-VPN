@@ -1463,6 +1463,13 @@ export default {
         return new Response('ok');
       }
 
+      // /profile (or /mysub) — the same card the «👤 پروفایل من» button
+      // shows. Works for admins too: they buy and test like everyone else.
+      if (text.startsWith('/profile') || text.startsWith('/mysub')) {
+        await mySub(env, chatId, msg.from);
+        return new Response('ok');
+      }
+
       // A photo (or an image sent as a file) IS the payment receipt — no
       // command needed. This runs BEFORE the admin branch on purpose: when the
       // admin tests the flow (or buys for someone), their photo used to fall
