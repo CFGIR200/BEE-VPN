@@ -29,8 +29,8 @@ android {
         applicationId = "app.beevpn"
         minSdk = 26
         targetSdk = 36
-        versionCode = 453
-        versionName = "3.4.0"
+        versionCode = 454
+        versionName = "3.5.0"
         // The encoded CI value is safe in generated Kotlin source. This is still extractable from an APK.
         val relaySecret = System.getenv("BEE_IDENTITY_RELAY_HMAC").orEmpty()
         val relayEncoded = Base64.getEncoder().encodeToString(relaySecret.toByteArray(Charsets.UTF_8))

@@ -10,6 +10,8 @@
 [![Android](https://img.shields.io/badge/Android-8.0%2B-3A4FB0?style=for-the-badge&logo=android&logoColor=white)](https://github.com/CFGIR200/BEE-VPN)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-6c5ce7?style=for-the-badge)](LICENSE)
 [![Transports](https://img.shields.io/badge/transports-7-1f6f4a?style=for-the-badge)](#روشهای-اتصال)
+[![iOS](https://img.shields.io/badge/iOS-15%2B-000000?style=for-the-badge&logo=apple&logoColor=white)](ios/README-FA.md)
+[![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D6?style=for-the-badge&logo=windows&logoColor=white)](windows/README-FA.md)
 
 **فارسی** · [English](README.en.md)
 
@@ -28,6 +30,16 @@
 رابط برنامه وضعیت‌های مهم را جلوی چشم نگه می‌دارد: مدت نشست، تأخیر، مصرف، سرعت، موقعیت خروجی، روش فعال و سلامت مسیرهای زنجیره‌ای. جزئیات حساس اتصال که باعث دوام مسیر روی یک شبکهٔ مشخص می‌شوند عمداً در این صفحه منتشر نشده‌اند؛ اینجا معماری و قابلیت‌ها را توضیح می‌دهیم، نه دستورالعمل عبور از فیلتر.
 
 > **فورک رسمی با برند BEE-VPN:** این پروژه بر پایهٔ **BEEHIVE-GUARD** (نسخهٔ 3.2.0) اثر **CFG.IR** ساخته شده و طبق مجوز **GNU AGPL-3.0** بازانتشار می‌شود. تمام اعتبار معماری و هستهٔ اصلی متعلق به پروژهٔ BEEHIVE-GUARD است؛ برندینگ، آیکون، تم رنگی و بسته‌بندی در این فورک تغییر کرده است.
+
+## هم‌خانواده‌ها (همان پروتکل، همان ظاهر عسلی)
+
+| نسخه | پلتفرم | توضیح |
+| --- | --- | --- |
+| **اندروید** (این مخزن، `app/`) | Android 8.0+ | نسخهٔ مرجع — هفت روش اتصال، گیت اشتراک، پروفایل خریدار |
+| **ویندوز** (`windows/`) | Windows 10/11 | دو کلاینت: Compose با پارالوژ کامل اندروید (xray TUN + WARP، همان پورت‌های 1819/1826) و WinForms سبک (پراکسی سیستمی) |
+| **iOS** (`ios/`) | iOS 15+ | بومی SwiftUI؛ ثبت‌نام WARP + WireGuardKit؛ گیت و پروفایل عیناً اندروید |
+
+هر سه نسخه از **یک** سرور لایسنس (`license-worker.js`) و همان کدهای `BEE-XXXX-XXXX-XXXX` استفاده می‌کنند؛ هر کد فقط روی یک دستگاه بسته می‌شود. راهنمای ساخت: [`windows/README-FA.md`](windows/README-FA.md) و [`ios/README-FA.md`](ios/README-FA.md).
 
 ## قابلیت‌های اصلی
 
