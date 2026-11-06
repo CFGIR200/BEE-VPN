@@ -8,7 +8,14 @@
 # compiled out — the same rule as the Android build.yml warning.
 # =============================================================================
 set -euo pipefail
-cd "$(dirname "$0")/.."   # project root (ios/)
+# Xcode runs this as a build phase with SRCROOT set and $0 pointing into
+# DerivedData — prefer SRCROOT, fall back to the script location for manual
+# runs from the ios/ directory.
+if [ -n "${SRCROOT:-}" ]; then
+  cd "$SRCROOT"
+else
+  cd "$(dirname "$0")/.."
+fi
 
 TARGET="BEE-VPN/License/Config.swift"
 

@@ -46,6 +46,13 @@ jobs:
 
       - name: Archive (unsigned, device slice)
         working-directory: ios
+        env:
+          # The Generate-Config build phase re-runs inside xcodebuild and
+          # needs the same values the inject step used.
+          BEE_LICENSE_URL: ${{ secrets.BEE_LICENSE_URL }}
+          BEE_LICENSE_PUBKEY_B64: ${{ secrets.BEE_LICENSE_PUBKEY_B64 }}
+          BEE_TELEGRAM_URL: ${{ secrets.BEE_TELEGRAM_URL }}
+          BEE_SUPPORT_URL: ${{ secrets.BEE_SUPPORT_URL }}
         run: |
           set -o pipefail
           xcodebuild \
