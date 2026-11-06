@@ -1,0 +1,95 @@
+name: BEE-VPN
+options:
+  bundleIdPrefix: app.beevpn
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    MARKETING_VERSION: "3.4.0"
+    CURRENT_PROJECT_VERSION: "1"
+    GENERATE_INFOPLIST_FILE: NO
+    SWIFT_VERSION: "5.9"
+
+packages:
+  WireGuardKit:
+    url: https://github.com/WireGuard/wireguard-apple
+    exactVersion: 1.0.16-27
+
+targets:
+  BEE-VPN:
+    type: application
+    platform: iOS
+    sources:
+      - path: BEE-VPN
+    preBuildScripts:
+      - path: Scripts/gen-config.sh
+        name: Generate Config.swift
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(SRCROOT)/BEE-VPN/License/Config.swift
+    dependencies:
+      - target: BeeTunnel
+        embed: true
+        codeSign: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.beevpn
+        PRODUCT_NAME: BEE-VPN
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        LIBRARY_SEARCH_PATHS: "$(inherited) $(PROJECT_DIR)/../wireguard-apple/Sources/WireGuardKitGo/out"
+    info:
+      path: BEE-VPN/Info.plist
+      properties:
+        CFBundleDisplayName: BEE-VPN
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        ITSAppUsesNonExemptEncryption: false
+    entitlements:
+      path: BEE-VPN/BEE-VPN.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+
+  BeeTunnel:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: BeeTunnel
+    dependencies:
+      - package: WireGuardKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.beevpn.tunnel
+        PRODUCT_NAME: BeeTunnel
+        TARGETED_DEVICE_FAMILY: "1"
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/PlugIns"
+        LIBRARY_SEARCH_PATHS: "$(inherited) $(PROJECT_DIR)/../wireguard-apple/Sources/WireGuardKitGo/out"
+    info:
+      path: BeeTunnel/Info.plist
+      properties:
+        CFBundleDisplayName: BeeTunnel
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
+    entitlements:
+      path: BeeTunnel/BeeTunnel.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+
+schemes:
+  BEE-VPN:
+    build:
+      targets:
+        BEE-VPN: all
+    run:
+      config: Debug
+    archive:
+      config: Release

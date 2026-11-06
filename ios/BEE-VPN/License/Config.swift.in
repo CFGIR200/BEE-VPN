@@ -1,0 +1,13 @@
+// GENERATED AT BUILD TIME by Scripts/gen-config.sh — do not edit.
+// This is the template (.in). The build phase overwrites the real file from
+// the environment, mirroring Android's BuildConfig injection.
+//
+// With licenseURL/licensePubKeyB64 empty the subscription gate compiles out
+// (same rule as the Android build: "gate will be disabled in this build").
+
+enum BeeConfig {
+    static let licenseURL = "__BEE_LICENSE_URL__"
+    static let licensePubKeyB64 = "__BEE_LICENSE_PUBKEY_B64__"
+    static let telegramURL = "__BEE_TELEGRAM_URL__"
+    static let supportURL = "__BEE_SUPPORT_URL__"
+}

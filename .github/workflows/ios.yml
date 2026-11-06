@@ -1,0 +1,77 @@
+name: iOS build
+
+# Builds the BEE-VPN iOS app into an (unsigned) IPA on every push that touches
+# ios/ — the same pattern the Android Release workflow uses. Unsigned IPAs are
+# installed with Sideloadly / AltStore / ESign / TrollStore, or signed for
+# TestFlight when APPLE_DEVELOPMENT_TEAM is provided.
+on:
+  push:
+    branches: [master]
+    paths: ["ios/**", ".github/workflows/ios.yml"]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build WireGuard Go bridge (libwg-go.a)
+        run: |
+          git clone --depth 1 --branch 1.0.16-27 \
+            https://github.com/WireGuard/wireguard-apple.git \
+            "$GITHUB_WORKSPACE/wireguard-apple"
+          export PLATFORM_NAME=iphoneos
+          export SDKROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
+          export ARCHS="arm64"
+          make -C "$GITHUB_WORKSPACE/wireguard-apple/Sources/WireGuardKitGo" \
+            -j"$(sysctl -n hw.ncpu)"
+          ls -la "$GITHUB_WORKSPACE/wireguard-apple/Sources/WireGuardKitGo/out"
+
+      - name: Inject build configuration (license server, links)
+        working-directory: ios
+        env:
+          BEE_LICENSE_URL: ${{ secrets.BEE_LICENSE_URL }}
+          BEE_LICENSE_PUBKEY_B64: ${{ secrets.BEE_LICENSE_PUBKEY_B64 }}
+          BEE_TELEGRAM_URL: ${{ secrets.BEE_TELEGRAM_URL }}
+          BEE_SUPPORT_URL: ${{ secrets.BEE_SUPPORT_URL }}
+        run: chmod +x Scripts/gen-config.sh && ./Scripts/gen-config.sh
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Archive (unsigned, device slice)
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project BEE-VPN.xcodeproj \
+            -scheme BEE-VPN \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath build/BEE-VPN.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            archive
+
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p Payload artifacts
+          cp -R ios/build/BEE-VPN.xcarchive/Products/Applications/*.app Payload/
+          zip -qry artifacts/BEE-VPN-unsigned.ipa Payload
+          shasum -a 256 artifacts/BEE-VPN-unsigned.ipa > artifacts/SHA256SUMS.txt
+          rm -rf Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BEE-VPN-unsigned-ipa
+          path: artifacts/
+          if-no-files-found: error
