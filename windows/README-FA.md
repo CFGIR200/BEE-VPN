@@ -49,8 +49,8 @@ windows/
 1. سیکرت‌ها مثل اندروید/iOS: `BEE_LICENSE_URL`، `BEE_LICENSE_PUBKEY_B64` (+ اختیاری `BEE_TELEGRAM_URL`، `BEE_SUPPORT_URL`).
 2. تب **Actions** → **Windows build** → **Run workflow** (یا خودکار با push روی `windows/**`).
 3. آرتیفکت‌ها:
-   - `BEE-VPN-1.0.0-msi-x64` → نصب‌کنندهٔ ویندوز (منو + شورتکات)
-   - `BEE-VPN-1.0.0-portable-x64` → پوشهٔ قابل حمل با `BEE-VPN.bat`
+   - `BEE-VPN-1.0.1-msi-x64` → نصب‌کنندهٔ ویندوز (منو + شورتکات)
+   - `BEE-VPN-1.0.1-portable-x64` → پوشهٔ قابل حمل با `BEE-VPN.bat`
 
 موتورها قبل از بسته‌بندی **پین و با sha256 راستی‌آزمایی** می‌شوند (xray v26.10.21، sing-box v1.14.4) و داخل jar اپ جاساز می‌شوند (پوشهٔ `cores-bin/cores/` در CI) — checksum ها داخل وورک‌فلو ثابت‌اند.
 

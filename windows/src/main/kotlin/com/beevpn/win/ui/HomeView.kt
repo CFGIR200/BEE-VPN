@@ -93,13 +93,13 @@ fun HomeView() {
             val busy = state == TunnelController.State.STARTING || state == TunnelController.State.PROVISIONING ||
                 state == TunnelController.State.STOPPING
             HoneyButton(
-                title = when {
-                    busy -> "…"
-                    state == TunnelController.State.CONNECTED -> "قطع اتصال"
+                title = when (state) {
+                    TunnelController.State.CONNECTED, TunnelController.State.STOPPING -> "قطع اتصال"
                     else -> "اتصال"
                 },
                 filled = true,
                 modifier = Modifier.width(430.dp),
+                busy = busy,
                 enabled = !busy,
             ) {
                 if (state == TunnelController.State.CONNECTED) TunnelController.disconnect() else TunnelController.connect()

@@ -109,6 +109,7 @@ fun HoneyButton(
     modifier: Modifier = Modifier,
     danger: Boolean = false,
     enabled: Boolean = true,
+    busy: Boolean = false,
     onClick: () -> Unit,
 ) {
     val alpha = if (enabled) 1f else 0.45f
@@ -132,10 +133,21 @@ fun HoneyButton(
                 if (filled && !danger) Honey.primary.copy(alpha = alpha) else Honey.divider,
                 RoundedCornerShape(12.dp),
             )
-            .clickable(enabled = enabled) { onClick() },
+            .clickable(enabled = enabled && !busy) { onClick() },
         contentAlignment = Alignment.Center,
     ) {
-        Text(title, style = T.body.copy(color = fg, fontWeight = FontWeight.Bold, fontSize = 15.sp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (busy) {
+                androidx.compose.material3.CircularProgressIndicator(
+                    modifier = Modifier.height(17.dp).width(17.dp),
+                    strokeWidth = 2.dp,
+                    color = fg,
+                    trackColor = Color.Transparent,
+                )
+                Spacer(Modifier.width(9.dp))
+            }
+            Text(title, style = T.body.copy(color = fg, fontWeight = FontWeight.Bold, fontSize = 15.sp))
+        }
     }
 }
 

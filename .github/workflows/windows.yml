@@ -56,6 +56,10 @@ jobs:
           Get-Content "$dst/manifest.txt"
           Get-ChildItem $dst | Format-Table Name, Length
 
+      - name: Unit tests (the license & shard QA gate)
+        working-directory: windows
+        run: .\gradlew.bat test --no-daemon
+
       - name: Build (MSI + distributable app image)
         shell: pwsh
         working-directory: windows
@@ -86,20 +90,20 @@ jobs:
           if (-not $found) { throw "cores did not land inside the app jar" }
           Copy-Item windows/BEE-VPN.bat "$app/BEE-VPN.bat"
           Copy-Item windows/README-FA.txt "$app/README-FA.txt"
-          Compress-Archive -Path $app -DestinationPath BEE-VPN-1.0.0-portable-x64.zip
+          Compress-Archive -Path $app -DestinationPath BEE-VPN-1.0.1-portable-x64.zip
 
       - name: Upload MSI
         uses: actions/upload-artifact@v4
         with:
-          name: BEE-VPN-1.0.0-msi-x64
+          name: BEE-VPN-1.0.1-msi-x64
           path: windows/build/compose/binaries/main/msi/*.msi
           if-no-files-found: error
 
       - name: Upload portable zip
         uses: actions/upload-artifact@v4
         with:
-          name: BEE-VPN-1.0.0-portable-x64
-          path: BEE-VPN-1.0.0-portable-x64.zip
+          name: BEE-VPN-1.0.1-portable-x64
+          path: BEE-VPN-1.0.1-portable-x64.zip
           if-no-files-found: error
 
       # Tag builds land on the GitHub Release next to the signed APKs
@@ -110,4 +114,4 @@ jobs:
         with:
           files: |
             windows/build/compose/binaries/main/msi/*.msi
-            BEE-VPN-1.0.0-portable-x64.zip
+            BEE-VPN-1.0.1-portable-x64.zip

@@ -31,6 +31,9 @@ import com.beevpn.win.shard.ShardProfile
 import com.beevpn.win.shard.ShardProber
 import com.beevpn.win.shard.ShardType
 import com.beevpn.win.tunnel.TunnelController
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /// The SHARD pool — the same subscription the Android app syncs, ranked by
 /// live TCP latency. Tap to pin a node; the engine always prefers the pin.
@@ -39,6 +42,7 @@ fun NodesView() {
     var probing by androidx.compose.runtime.remember { mutableStateOf(false) }
     var results by androidx.compose.runtime.remember { mutableStateOf<List<ShardProber.Result>>(TunnelController.lastProbed) }
     var pinned by androidx.compose.runtime.remember { mutableStateOf(TunnelController.pinnedNodeKey) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
 
     Column(Modifier.fillMaxSize().background(Honey.canvas).padding(horizontal = 36.dp, vertical = 22.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -50,19 +54,26 @@ fun NodesView() {
             )
             Spacer(Modifier.width(12.dp))
             HoneyButton(
-                title = if (probing) "…" else "↻ به‌روزرسانی و پینگ",
+                title = if (probing) "در حال پینگ…" else "↻ به‌روزرسانی و پینگ",
                 filled = false,
-                modifier = Modifier.width(220.dp),
+                modifier = Modifier.width(240.dp),
+                busy = probing,
                 enabled = !probing,
             ) {
                 probing = true
-                Thread {
-                    val pool = TunnelController.refreshPoolNow()
-                    val ranked = ShardProber.probeAll(pool)
+                scope.launch {
+                    val ranked = withContext(Dispatchers.IO) {
+                        try {
+                            val pool = TunnelController.refreshPoolNow()
+                            ShardProber.probeAll(pool)
+                        } catch (_: Throwable) {
+                            TunnelController.nodePool.map { ShardProber.Result(it, -1) }
+                        }
+                    }
                     results = ranked
                     TunnelController.noteProbed(ranked)
                     probing = false
-                }.start()
+                }
             }
         }
         Spacer(Modifier.height(4.dp))

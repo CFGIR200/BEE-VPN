@@ -98,11 +98,15 @@ object TunnelController {
     }
 
     /// Manually imported links from the Advanced tab — persisted separately so
-    /// a subscription refresh never drops them.
+    /// a subscription refresh never drops them. Never throws.
     private fun extraProfiles(): List<ShardProfile> {
         val f = File(AppPaths.baseDir, "shard-extra.txt")
         if (!f.isFile) return emptyList()
-        return ShardImport.parseBatch(f.readText())
+        return try {
+            ShardImport.parseBatch(f.readText())
+        } catch (_: Exception) {
+            emptyList()
+        }
     }
 
     // ------------------------------------------------------------- connect

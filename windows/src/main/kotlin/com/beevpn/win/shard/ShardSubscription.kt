@@ -24,10 +24,13 @@ object ShardSubscription {
     fun lastCheckMillis(): Long =
         lastCheckFile().let { if (it.isFile) it.readText().trim().toLongOrNull() ?: 0L else 0L }
 
-    fun cachedProfiles(): List<ShardProfile> {
+    /// Never throws — a corrupt or locked cache file must not crash startup
+    /// or a connect attempt; it just yields an empty pool.
+    fun cachedProfiles(): List<ShardProfile> = try {
         val f = AppPaths.shardCache
-        if (!f.isFile) return emptyList()
-        return ShardImport.parseBatch(f.readText())
+        if (!f.isFile) emptyList() else ShardImport.parseBatch(f.readText())
+    } catch (_: Exception) {
+        emptyList()
     }
 
     fun needsCheck(): Boolean =

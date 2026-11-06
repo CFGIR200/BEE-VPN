@@ -60,11 +60,29 @@ private enum class Tab(val label: String, val icon: String) {
 @Composable
 private fun AppRoot() {
     LaunchedEffect(Unit) {
-        LicenseManager.start()
-        TunnelController.init()
+        // Startup work off the UI thread; a broken store or cache must never
+        // take the window down — the gate simply shows instead.
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                LicenseManager.start()
+            } catch (t: Throwable) {
+                com.beevpn.win.engine.EngineProcess.logLine("[license] start failed: $t")
+            }
+            try {
+                TunnelController.init()
+            } catch (t: Throwable) {
+                com.beevpn.win.engine.EngineProcess.logLine("[tunnel] init failed: $t")
+            }
+        }
     }
     var tab by remember { mutableStateOf(Tab.HOME) }
     val gate = LicenseManager.gate
+
+    // The unlock transition: while locked the rail only offers «درباره», so
+    // after a successful activation snap the content back to خانه.
+    LaunchedEffect(gate) {
+        if (gate == LicenseManager.Gate.GRANTED && tab != Tab.HOME) tab = Tab.HOME
+    }
 
     Column(Modifier.fillMaxSize().background(Honey.canvas)) {
         // title bar strip

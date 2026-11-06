@@ -64,7 +64,13 @@ object LicenseManager {
 
     fun start() {
         if (!started.compareAndSet(false, true)) return
-        refreshState()
+        try {
+            refreshState()
+        } catch (t: Throwable) {
+            // A broken store must never crash the launch — show the gate instead.
+            gate = Gate.LOCKED
+            lockReason = null
+        }
         scheduleBackgroundVerification()
     }
 
@@ -84,7 +90,8 @@ object LicenseManager {
     // ------------------------------------------------------------ actions
 
     /// Activates a BEE-XXXX-XXXX-XXXX code. Returns null on success, a
-    /// buyer-readable Persian error otherwise.
+    /// buyer-readable Persian error otherwise. Catches Throwable — an Error
+    /// must never escape into a UI worker thread and freeze the button.
     fun activate(code: String): String? {
         val clean = code.uppercase().trim()
         return try {
@@ -92,8 +99,8 @@ object LicenseManager {
             store(resp)
         } catch (e: LicenseAPI.LicenseError) {
             e.message
-        } catch (e: Exception) {
-            "خطای غیرمنتظره: ${e.message}"
+        } catch (t: Throwable) {
+            "خطای غیرمنتظره: ${t.message ?: t.javaClass.simpleName}"
         }
     }
 
@@ -102,8 +109,8 @@ object LicenseManager {
         store(resp)
     } catch (e: LicenseAPI.LicenseError) {
         e.message
-    } catch (e: Exception) {
-        "خطای غیرمنتظره: ${e.message}"
+    } catch (t: Throwable) {
+        "خطای غیرمنتظره: ${t.message ?: t.javaClass.simpleName}"
     }
 
     /// Persists a successful /activate or /login response and flips state.
@@ -148,7 +155,9 @@ object LicenseManager {
         val token = storedToken ?: return
         scope.launch {
             try {
-                val resp = LicenseAPI.verify(token, installId)
+                val resp = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    LicenseAPI.verify(token, installId)
+                }
                 val fresh = resp.optString("token", "")
                 if (fresh.isNotEmpty() &&
                     BeeCrypto.verifyToken(fresh, BeeConfig.LICENSE_PUBKEY_B64, installId) != null

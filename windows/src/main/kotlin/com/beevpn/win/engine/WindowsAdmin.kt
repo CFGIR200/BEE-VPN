@@ -6,7 +6,18 @@ package com.beevpn.win.engine
 /// one-click elevated relaunch instead of failing mid-connect.
 object WindowsAdmin {
 
+    /// The elevation state cannot change while the process lives, and probing
+    /// it spawns a `net session` process each time — cache the first answer.
+    @Volatile private var cached: Boolean? = null
+
     fun isAdmin(): Boolean {
+        cached?.let { return it }
+        val v = probeAdmin()
+        cached = v
+        return v
+    }
+
+    private fun probeAdmin(): Boolean {
         if (!com.beevpn.win.AppPaths.isWindows()) return false
         return try {
             val p = ProcessBuilder("net", "session").start()
