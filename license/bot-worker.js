@@ -209,6 +209,29 @@ async function savePrices(env, obj) {
   ).bind(PRICES_KEY, JSON.stringify(obj), nowSec()).run();
 }
 
+// Runtime-editable payment info: /card and /usdt write the D1 settings table
+// (keys pay:card / pay:usdt); getPayInfo() prefers them over the CARD_INFO /
+// USDT_INFO secrets — the operator can change the card number / USDT address
+// from inside Telegram, no redeploy needed. «/card clear» returns to the
+// secret value. Falls back silently when the table is missing.
+const PAY_KEYS = { card: 'pay:card', usdt: 'pay:usdt' };
+
+async function getPayInfo(env) {
+  const out = {
+    card: String(env.CARD_INFO || '(کارت به کارت: شماره کارت در env تنظیم نشده)'),
+    usdt: String(env.USDT_INFO || '(USDT TRC20: آدرس کیف پول در env تنظیم نشده)'),
+  };
+  try {
+    const rows = await env.DB.prepare('SELECT key, value FROM settings WHERE key = ? OR key = ?')
+      .bind(PAY_KEYS.card, PAY_KEYS.usdt).all();
+    for (const row of rows.results || []) {
+      if (row.key === PAY_KEYS.card && row.value) out.card = row.value;
+      if (row.key === PAY_KEYS.usdt && row.value) out.usdt = row.value;
+    }
+  } catch (_) { /* no settings table yet — env fallback */ }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Button-driven /price panel (admin only)
 // ---------------------------------------------------------------------------
@@ -389,8 +412,9 @@ async function planKeyboard(env) {
 
 async function paymentText(env, plan) {
   const info = (await getPrices(env))[plan] || { title: plan, price: '?' };
-  const card = String(env.CARD_INFO || '(کارت به کارت: شماره کارت در env تنظیم نشده)');
-  const usdt = String(env.USDT_INFO || '(USDT TRC20: آدرس کیف پول در env تنظیم نشده)');
+  const pay = await getPayInfo(env);
+  const card = pay.card;
+  const usdt = pay.usdt;
   return [
     `🐝 <b>${esc(info.title)}</b> — ${esc(info.price)}`,
     '',
@@ -755,6 +779,36 @@ async function cmdPrice(env, chatId, args) {
   return send(env, chatId, await priceMenuText(env), priceMenuKb(await getPrices(env)));
 }
 
+/** /card and /usdt — runtime-edit the payment lines the buyers see (admin
+ *  only). Writes the D1 settings table; «clear» returns to the Secret value. */
+async function cmdPayInfo(env, chatId, kind, args) {
+  const key = PAY_KEYS[kind];
+  const label = kind === 'card' ? 'کارت به کارت' : 'تتر (TRC20)';
+  const cmdName = kind === 'card' ? '/card' : '/usdt';
+  const rest = args.join(' ').trim();
+  const pay = await getPayInfo(env);
+  const current = kind === 'card' ? pay.card : pay.usdt;
+  if (!rest) {
+    return send(env, chatId,
+      `💳 <b>${label}</b> — مقدار فعلی:\n<code>${esc(current)}</code>\n\n` +
+      `تغییر: <code>${cmdName} متن تازه</code>\n` +
+      `بازگشت به مقدار Secret: <code>${cmdName} clear</code>`);
+  }
+  if (rest.toLowerCase() === 'clear') {
+    try {
+      await env.DB.prepare('DELETE FROM settings WHERE key = ?').bind(key).run();
+    } catch (_) { /* table missing = already the secret value */ }
+    const fresh = await getPayInfo(env);
+    return send(env, chatId,
+      `↩️ ${label} به مقدار Secret برگشت:\n<code>${esc(kind === 'card' ? fresh.card : fresh.usdt)}</code>`);
+  }
+  await env.DB.prepare(
+    'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ' +
+    'ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
+  ).bind(key, rest, nowSec()).run();
+  return send(env, chatId, `✅ <b>${label}</b> به‌روز شد:\n<code>${esc(rest)}</code>`);
+}
+
 async function listText(env, limitRaw) {
   const n = Math.min(Math.max(parseInt(limitRaw || '10', 10) || 10, 1), 30);
   const lic = await env.DB.prepare('SELECT * FROM licenses ORDER BY created_at DESC LIMIT ?').bind(n).all();
@@ -1020,6 +1074,14 @@ async function cmdDiag(env, chatId) {
     ['BOT_TOKEN', env.BOT_TOKEN], ['WEBHOOK_SECRET', env.WEBHOOK_SECRET],
     ['ADMIN_IDS', env.ADMIN_IDS], ['CARD_INFO', env.CARD_INFO], ['USDT_INFO', env.USDT_INFO],
   ].map(([k, v]) => `${k} ${v ? '✅' : '❌'}`).join(' — '));
+  try {
+    const ovr = await env.DB.prepare('SELECT key FROM settings WHERE key = ? OR key = ?')
+      .bind(PAY_KEYS.card, PAY_KEYS.usdt).all();
+    const names = (ovr.results || []).map((r) => (r.key === PAY_KEYS.card ? 'کارت' : 'تتر'));
+    lines.push('💳 پرداخت: ' + (names.length
+      ? `ویرایش در ربات فعال (${names.join('، ')})`
+      : 'مقدار Secret'));
+  } catch (_) { lines.push('💳 پرداخت: مقدار Secret'); }
   const me = await tg(env, 'getMe', {});
   lines.push(me && me.ok
     ? `🤖 ربات: @${esc(me.result.username)}`
@@ -1285,8 +1347,9 @@ async function regPlanPaid(env, chatId, from, plan) {
 
 async function regPaymentText(env, plan) {
   const info = (await getPrices(env))[plan] || { title: plan, price: '?' };
-  const card = String(env.CARD_INFO || '(کارت به کارت: شماره کارت در env تنظیم نشده)');
-  const usdt = String(env.USDT_INFO || '(USDT TRC20: آدرس کیف پول در env تنظیم نشده)');
+  const pay = await getPayInfo(env);
+  const card = pay.card;
+  const usdt = pay.usdt;
   return [
     `📝 <b>ثبت‌نام ${esc(info.title)}</b> — ${esc(info.price)}`,
     '',
@@ -1381,6 +1444,7 @@ const ADMIN_HELP = [
   '<code>/stats</code> — آمار کل + فروش ۷/۳۰ روز + سهم پلن‌ها',
   '<code>/buyers</code> — لیست خریداران با تعداد خرید',
   '<code>/price</code> — پنل دکمه‌ای قیمت‌ها',
+  '<code>/card …</code> • <code>/usdt …</code> — تغییر شماره کارت/آدرس تتر بدون استقرار (clear = بازگشت)',
   '<code>/panel</code> — پنل مدیریت کامل',
   '<code>/diag</code> — عیب‌یابی: وب‌هوک، قابل‌ارسال‌بودن ادمین‌ها، رسیدهای در انتظار',
 ].join('\n');
@@ -2025,6 +2089,8 @@ export default {
           await send(env, chatId, v.text, v.kb);
         }
         else if (cmd === '/price') await cmdPrice(env, chatId, args);
+        else if (cmd === '/card') await cmdPayInfo(env, chatId, 'card', args);
+        else if (cmd === '/usdt') await cmdPayInfo(env, chatId, 'usdt', args);
         else if (cmd === '/revoke') await setStatus(env, chatId, args, 'revoked');
         else if (cmd === '/unrevoke') await setStatus(env, chatId, args, 'active');
         else if (cmd === '/extend') await cmdExtend(env, chatId, args);

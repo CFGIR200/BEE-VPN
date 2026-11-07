@@ -334,5 +334,24 @@ section('T23 — دیپ‌لینک اپ: /start register');
 ok(await drive(textMsg(424242, '/start register')) === 200, '/start register → 200');
 ok(lastSentTo(424242).includes('ثبت‌نام در کندو'), 'دیپ‌لینک مستقیم به جریان ثبت‌نام رسید');
 
+section('T24 — /card و /usdt: تغییر اطلاعات پرداخت بدون استقرار');
+ok(await drive(textMsg(111, '/card')) === 200, '/card بدون متن → 200');
+ok(lastSentTo(111).includes('CARD-INFO'), 'مقدار فعلی از Secret نشان داده شد');
+ok(await drive(textMsg(111, '/card 6037-9912-3456-7890 به نام تست')) === 200, '/card با متن → 200');
+ok(lastSentTo(111).includes('6037-9912-3456-7890'), 'تأیید به‌روزرسانی آمد');
+ok(await drive(textMsg(111, '/usdt TRC20: TXtestAddress123')) === 200, '/usdt با متن → 200');
+ok(await drive(cb(905556034, 'plan:m1')) === 200, 'تپ پلن خریدار → 200');
+const payPage = sentTo(905556034).at(-1)?.body?.text || '';
+ok(payPage.includes('6037-9912-3456-7890'), 'صفحهٔ پرداخت کارت جدید را نشان داد');
+ok(payPage.includes('TXtestAddress123'), 'صفحهٔ پرداخت آدرس تتر تازه را نشان داد');
+ok(!payPage.includes('CARD-INFO'), 'مقدار Secret دیگر دیده نمی‌شود');
+ok(await drive(textMsg(111, '/diag')) === 200, '/diag → 200');
+ok(lastSentTo(111).includes('ویرایش در ربات فعال'), '/diag وضعیت ویرایش را گزارش کرد');
+ok(await drive(textMsg(111, '/card clear')) === 200, '/card clear → 200');
+ok(lastSentTo(111).includes('CARD-INFO'), 'clear به مقدار Secret برگشت');
+const settingsBefore = env.DB.prepare('SELECT COUNT(*) AS n FROM settings').first().n;
+ok(await drive(textMsg(999999, '/card hack-attempt')) === 200, '/card از غیرادمین → 200 (نادیده گرفته شد)');
+ok(env.DB.prepare('SELECT COUNT(*) AS n FROM settings').first().n === settingsBefore, 'غیرادمین چیزی تغییر نداد');
+
 console.log(`\n═══ نتیجه: ${pass} پاس ✅ — ${fail} شکست ❌ ═══`);
 process.exitCode = fail ? 1 : 0;
