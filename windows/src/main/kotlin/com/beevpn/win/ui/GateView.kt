@@ -150,6 +150,23 @@ fun GateView() {
             )
             Text("برای شروع، اشتراک خود را فعال کن", style = T.muted, modifier = Modifier.padding(top = 4.dp))
 
+            // The server's verdict from the last background /verify — expiry and
+            // revocation land here, exactly like Android's EXTRA_REASON=expired
+            // status line on LicenseGateActivity. Cleared on a fresh activation.
+            LicenseManager.lockReason?.let { reason ->
+                Spacer(Modifier.height(12.dp))
+                Box(
+                    Modifier
+                        .width(460.dp)
+                        .clip(FieldShape)
+                        .background(Honey.danger.copy(alpha = 0.10f))
+                        .border(1.dp, Honey.danger.copy(alpha = 0.35f), FieldShape)
+                        .padding(12.dp),
+                ) {
+                    Text(reason, style = T.body.copy(color = Honey.danger, fontSize = 13.sp))
+                }
+            }
+
             Spacer(Modifier.height(20.dp))
 
             GlassCard(Modifier.width(460.dp)) {
@@ -243,7 +260,11 @@ fun GateView() {
 
                     Spacer(Modifier.height(12.dp))
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        LinkText("🛍 خرید اشتراک", com.beevpn.win.config.BeeConfig.TELEGRAM_URL)
+                        LinkText("🛍 خرید", com.beevpn.win.config.BeeConfig.TELEGRAM_URL)
+                        // Deep link straight into the bot's 📝 ثبت‌نام flow —
+                        // the username/password registration the profile tab
+                        // of this gate signs into.
+                        LinkText("📝 ثبت‌نام", telegramRegisterUrl())
                         LinkText("🆘 پشتیبانی", com.beevpn.win.config.BeeConfig.SUPPORT_URL)
                     }
                 }
@@ -256,6 +277,14 @@ fun GateView() {
             )
         }
     }
+}
+
+/// The bot deep link that opens the 📝 ثبت‌نام flow directly, so a buyer
+/// without any entitlement can register (username + password) in one tap.
+private fun telegramRegisterUrl(): String {
+    val base = com.beevpn.win.config.BeeConfig.TELEGRAM_URL
+    if (base.isBlank()) return base
+    return base + (if (base.contains('?')) "&" else "?") + "start=register"
 }
 
 @Composable

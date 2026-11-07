@@ -4,17 +4,25 @@
  *
  * What it does for the operator:
  *   - sells: plan catalogue -> payment info (card-to-card + USDT) -> the
- *     buyer sends the receipt, the admin issues a code with /gen and pastes
- *     it into the chat. No payment gateway needed on day one.
- *   - trial: hands out exactly one 1-day code per Telegram account.
+ *     buyer sends the receipt, the admin taps ✅ and the code is issued and
+ *     delivered automatically. No payment gateway needed on day one.
+ *   - registers (ثبت‌نام): the 📝 menu button mints a real ACCOUNT —
+ *     username + password delivered straight into the buyer's chat. The
+ *     1-day trial is instant and one-per-Telegram across BOTH kinds; paid
+ *     plans ride the receipt flow and the ✅ (oka:…) builds the account,
+ *     stamped with the buyer's Telegram id/name/@handle.
+ *   - trial: hands out exactly one 1-day entitlement per Telegram account,
+ *     as a code (🎁) or as a registered account (📝) — never both.
  *   - profile: /profile (rich buyer profile: plan, Jalali activation/expiry
  *              dates, days remaining, device binding) + /link <code> to claim
  *              a code issued by support + the «پروفایل من» button.
  *   - admin: button panel (/panel or 🛠 پنل مدیریت) — dashboard, license
  *            management (gen/adduser/search/list/revoke/extend/reset),
- *            buyers, pending receipts, prices — plus every command:
- *            /gen /adduser /list /who /revoke /unrevoke /extend /reset
- *            /stats /buyers /price /diag
+ *            buyers, REGISTRATIONS (ثبت‌نامی‌ها: linked Telegram name,
+ *            numeric id, issued username, Jalali register/expiry dates,
+ *            device binding — /regs), pending receipts, prices — plus every
+ *            command: /gen /adduser /list /who /regs /revoke /unrevoke
+ *            /extend /reset /stats /buyers /price /diag
  *
  * Webhook setup (once, after deploy):
  *   curl "https://api.telegram.org/bot$BOT_TOKEN/setWebhook" \
@@ -159,6 +167,7 @@ function mainMenu(env, from) {
   const kb = {
     inline_keyboard: [
       [{ text: '🛍 خرید اشتراک', callback_data: 'buy' }, { text: '🎁 کد تست ۱ روزه', callback_data: 'trial' }],
+      [{ text: '📝 ثبت‌نام (نام کاربری و رمز)', callback_data: 'reg' }],
       [{ text: '👤 پروفایل من', callback_data: 'mysub' }, { text: '🧾 راهنمای فعال‌سازی', callback_data: 'help' }],
       [{ text: '🆘 پشتیبانی', url: support }],
     ],
@@ -402,8 +411,8 @@ const HELP_TEXT = [
   '',
   '۱) اپ BEE-VPN را باز کن — صفحهٔ «کندو قفله 🐝» می‌آید.',
   '۲) یکی از دو راه:',
+  '   👤 <b>حساب کاربری:</b> در همین ربات «📝 ثبت‌نام» بزن — نام کاربری و رمز همان‌جا به‌ تو می‌رسد.',
   '   🔑 <b>کد فعال‌سازی:</b> کدی که از ربات/پشتیبانی گرفتی را وارد کن.',
-  '   👤 <b>حساب کاربری:</b> نام کاربری و رمزی که ادمین داده را بزن.',
   '۳) روی «فعال‌سازی/ورود» بزن — تمام! کندو باز می‌شود 🍯',
   '',
   '⚠️ هر اشتراک فقط روی <b>یک دستگاه</b> فعال می‌شود.',
@@ -415,6 +424,7 @@ const WELCOME = [
   '',
   'اینجا می‌توانی اشتراک بفروشی یا فعال‌سازی کنی:',
   '🛍 خرید اشتراک — پلن‌ها و روش پرداخت',
+  '📝 ثبت‌نام — حساب کاربری (نام کاربری و رمز) بگیر',
   '🎁 کد تست ۱ روزه — یک‌بار برای هر حساب تلگرام',
   '👤 پروفایل من — تاریخ انقضا و روزهای باقی‌مانده',
 ].join('\n');
@@ -498,11 +508,12 @@ async function lookup(env, key) {
   return null;
 }
 
-/** /who for one code/username — same text as before, now with an action
- *  keyboard so the panel can revoke/extend/reset without typing anything. */
+/** /who for one code/username — the manage card: full info plus one-tap
+ *  actions (extend 7/30/90 days, status toggle, device reset). Telegram-linked
+ *  accounts show the buyer's registered name as a live link into their chat. */
 async function whoView(env, key) {
   const found = await lookup(env, key);
-  if (!found) return { text: '❌ پیدا نشد.', kb: licMenuKb() };
+  if (!found) return { text: '❌ پیدا نشد.', kb: adminMenuKb() };
   const r = found.row;
   const kind = found.kind === 'license' ? 'L' : 'A';
   const subject = found.kind === 'license' ? r.code : r.username;
@@ -513,22 +524,30 @@ async function whoView(env, key) {
     fmtExpiry(r, now),
     `دستگاه: ${r.bound_install_id ? `<code>${esc(r.bound_install_id.slice(0, 12))}…</code>` : '—'}`,
     r.activated_at ? `فعال‌سازی: ${faJalali(r.activated_at)}` : '',
-    r.telegram_user_id ? `تلگرام: <a href="tg://user?id=${r.telegram_user_id}">${r.telegram_user_id}</a>` : '',
-  ].filter(Boolean);
-  const act = (op) => `act:${kind}:${subject}:${op}`;
+  ];
+  if (r.telegram_user_id) {
+    const label = r.telegram_name
+      || (r.telegram_username ? '@' + r.telegram_username : String(r.telegram_user_id));
+    lines.push(`تلگرام: <a href="tg://user?id=${r.telegram_user_id}">${esc(label)}</a>`
+      + (r.telegram_name && r.telegram_username ? ` (@${esc(r.telegram_username)})` : '')
+      + ` — <code>${r.telegram_user_id}</code>`);
+  }
+  const act = (op, extra) => `adm:${op}:${kind}:${subject}${extra ? ':' + extra : ''}`;
   const kb = { inline_keyboard: [
     [
-      { text: r.status === 'active' ? '⛔ لغو اشتراک' : '✅ رفع لغو', callback_data: act(r.status === 'active' ? 'rv' : 'un') },
-      { text: '🔁 ریست دستگاه', callback_data: act('rst') },
+      { text: '➕ ۷ روز', callback_data: act('ext', '7') },
+      { text: '➕ ۳۰ روز', callback_data: act('ext', '30') },
+      { text: '➕ ۹۰ روز', callback_data: act('ext', '90') },
     ],
     [
-      { text: '➕ ۳۰ روز', callback_data: act('e30') },
-      { text: '➕ ۹۰ روز', callback_data: act('e90') },
-      { text: '🔄', callback_data: act('vw') },
+      r.status === 'active'
+        ? { text: '⛔ لغو اشتراک', callback_data: act('st', 'revoked') }
+        : { text: '✅ فعال‌سازی دوباره', callback_data: act('st', 'active') },
+      { text: '🔁 ریست دستگاه', callback_data: act('rst') },
     ],
-    [{ text: '🔙 مدیریت اشتراک‌ها', callback_data: 'adm:lic' }],
+    [{ text: '🔙 پنل مدیریت', callback_data: 'adm' }],
   ] };
-  return { text: lines.join('\n'), kb };
+  return { text: lines.filter(Boolean).join('\n'), kb };
 }
 
 async function cmdWho(env, chatId, args) {
@@ -556,7 +575,7 @@ async function whoBuyerView(env, uid) {
   const lines = [`👤 <b>خریدار</b> <a href="tg://user?id=${uid}">${uid}</a>`];
   const rows = lic.results || [];
   if (!rows.length && !(acc.results || []).length) {
-    return { text: '❌ برای این شناسهٔ تلگرام چیزی ثبت نشده.', kb: { inline_keyboard: [[{ text: '🔙 خریداران', callback_data: 'adm:buyers' }]] } };
+    return { text: '❌ برای این شناسهٔ تلگرام چیزی ثبت نشده.', kb: { inline_keyboard: [[{ text: '🔙 خریداران', callback_data: 'adm:buyers:1' }]] } };
   }
   for (const r of rows) {
     const when = faDate(r.created_at);
@@ -576,9 +595,9 @@ async function whoBuyerView(env, uid) {
   lines.push('', `مجموع: ${paid.length} خرید — ${liveCount(paid, now)} در جریان` + (trialN ? ` — ${trialN} تست 🎁` : ''));
   const kbRows = [];
   for (const r of paid.slice(0, 5)) {
-    kbRows.push([{ text: `⚙️ ${r.code}`, callback_data: `act:L:${r.code}:vw` }]);
+    kbRows.push([{ text: `⚙️ ${r.code}`, callback_data: `adm:vw:L:${r.code}` }]);
   }
-  kbRows.push([{ text: '🔙 خریداران', callback_data: 'adm:buyers' }]);
+  kbRows.push([{ text: '🔙 خریداران', callback_data: 'adm:buyers:1' }]);
   return { text: lines.join('\n'), kb: { inline_keyboard: kbRows } };
 }
 
@@ -642,6 +661,9 @@ async function statsText(env) {
   const buyers = await env.DB.prepare(
     "SELECT COUNT(DISTINCT telegram_user_id) AS n FROM licenses WHERE telegram_user_id IS NOT NULL AND plan != 'trial'",
   ).first();
+  const regs = await env.DB.prepare(
+    "SELECT COUNT(*) AS n, SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) AS act FROM accounts WHERE telegram_user_id IS NOT NULL",
+  ).first();
   const d7 = await env.DB.prepare("SELECT COUNT(*) AS n FROM licenses WHERE created_at > ? AND plan != 'trial'").bind(now - 7 * 86400).first();
   const d30 = await env.DB.prepare("SELECT COUNT(*) AS n FROM licenses WHERE created_at > ? AND plan != 'trial'").bind(now - 30 * 86400).first();
   const trials = await env.DB.prepare(
@@ -656,6 +678,7 @@ async function statsText(env) {
     `اشتراک‌های در جریان: <b>${liveN}</b>`,
     '',
     `🧑‍🤝‍🧑 خریداران: <b>${buyers ? buyers.n : 0}</b> نفر`,
+    `📝 ثبت‌نامی‌ها: <b>${regs ? regs.n : 0}</b> حساب تلگرامی${regs && regs.act ? ` — ${regs.act} فعال` : ''} (لیست: /regs)`,
     `🛒 فروش ۷ روز: <b>${d7 ? d7.n : 0}</b> — ۳۰ روز: <b>${d30 ? d30.n : 0}</b>`,
     `🏷 پلن‌ها: ${mixLine || '—'}`,
     `🎁 تست ۱ روزه — ۷ روز اخیر: ${trials ? trials.n : 0}`,
@@ -799,20 +822,17 @@ async function mySub(env, chatId, tgId, from) {
   const planTitle = (p) => esc((priceMap[p] && priceMap[p].title) || p);
   if (!rows.length && !accRows.length) {
     return send(env, chatId, [
-      '👤 <b>پروفایل من</b>',
+      '👤 <b>پروفایل تو در کندو</b>',
       `🆔 شناسه: <code>${tgId}</code>`,
       '',
-      'هنوز اشتراکی روی این حساب ثبت نشده.',
-      'با 🛍 خرید شروع کن یا از 🎁 کد تست ۱ روزه استفاده کن.',
+      'هنوز اشتراکی نداری — با 🛍 خرید شروع کن یا 🎁 کد تست بگیر.',
       '',
       'اگر پشتیبانی برایت کد ساخته، با این فرمت به پروفایلت وصلش کن:',
       '<code>/link BEE-XXXX-XXXX-XXXX</code>',
     ].join('\n'), { inline_keyboard: [[{ text: '🛍 خرید اشتراک', callback_data: 'buy' }]] });
   }
-  const name = esc((from && (from.first_name || '')) || '')
-    + (from && from.last_name ? ' ' + esc(from.last_name) : '');
   const lines = [
-    `👤 <b>پروفایل ${name || 'من'}</b>`,
+    '👤 <b>پروفایل تو در کندو</b>',
     `🆔 شناسه: <code>${tgId}</code>`,
     '',
   ];
@@ -838,7 +858,8 @@ async function mySub(env, chatId, tgId, from) {
   };
   for (const r of rows) pushEnt(r, '🔑');
   for (const r of accRows) pushEnt(r, '👤');
-  if (nearest) lines.push(`📌 نزدیک‌ترین انقضا: <b>${faNum(daysLeftOf({ expires_at: nearest }, now))} روز</b> دیگر`, '');
+  lines.push(`📌 اشتراک در جریان: <b>${faNum(liveN)}</b>`
+    + (nearest ? ` — نزدیک‌ترین انقضا: ${faNum(daysLeftOf({ expires_at: nearest }, now))} روز دیگر` : ''), '');
   lines.push('🔗 اتصال کد از پشتیبانی: <code>/link BEE-XXXX-XXXX-XXXX</code>');
   return send(env, chatId, lines.join('\n'), {
     inline_keyboard: [
@@ -871,16 +892,19 @@ async function notifyAdmins(env, text) {
 
 const PENDING_TTL = 24 * 3600;  // a plan choice expires after a day
 
-async function setPending(env, tgId, plan) {
+// kind: 'code' (🛍 خرید → کد فعال‌سازی) or 'account' (📝 ثبت‌نام →
+// username/password). The receipt buttons and the approval handler both
+// branch on it.
+async function setPending(env, tgId, plan, kind = 'code') {
   await env.DB.prepare(
-    'INSERT INTO pending_receipts (tg_user_id, plan, ts) VALUES (?, ?, ?) '
-    + 'ON CONFLICT(tg_user_id) DO UPDATE SET plan = excluded.plan, ts = excluded.ts',
-  ).bind(tgId, plan, nowSec()).run();
+    'INSERT INTO pending_receipts (tg_user_id, plan, ts, kind) VALUES (?, ?, ?, ?) '
+    + 'ON CONFLICT(tg_user_id) DO UPDATE SET plan = excluded.plan, ts = excluded.ts, kind = excluded.kind',
+  ).bind(tgId, plan, nowSec(), kind).run();
 }
 
 async function getPending(env, tgId) {
   const row = await env.DB.prepare(
-    'SELECT plan, ts FROM pending_receipts WHERE tg_user_id = ?',
+    'SELECT plan, ts, kind FROM pending_receipts WHERE tg_user_id = ?',
   ).bind(tgId).first();
   if (!row || nowSec() - (row.ts || 0) > PENDING_TTL) return null;
   return row;
@@ -896,9 +920,11 @@ function buyerLine(from) {
   return `<a href="tg://user?id=${from.id}">${name || 'خریدار'}</a> (id <code>${from.id}</code>)`;
 }
 
-function receiptButtons(buyerId, plan, ts) {
+function receiptButtons(buyerId, plan, ts, isAccount) {
   return { inline_keyboard: [[
-    { text: '✅ تأیید و ارسال کد', callback_data: `ok:${buyerId}:${plan}:${ts}` },
+    isAccount
+      ? { text: '✅ تأیید و ساخت حساب', callback_data: `oka:${buyerId}:${plan}:${ts}` }
+      : { text: '✅ تأیید و ارسال کد', callback_data: `ok:${buyerId}:${plan}:${ts}` },
     { text: '❌ رد', callback_data: `no:${buyerId}:${plan}:${ts}` },
   ]] };
 }
@@ -918,6 +944,10 @@ async function handleReceipt(env, msg) {
   }
   const ts = nowSec();
   const info = (await getPrices(env))[pending.plan] || { title: pending.plan, price: '?' };
+  // A registration receipt (kind='account') mints a username/password, not a
+  // code — the caption and the ✅ button both say so, so the admin always
+  // knows what they are approving.
+  const isAccount = pending.kind === 'account';
   const ids = String(env.ADMIN_IDS || '').split(',').map((s) => s.trim()).filter(Boolean);
   if (!ids.length) {
     console.error('receipt: ADMIN_IDS is empty — buyer receipt has nowhere to go');
@@ -936,18 +966,21 @@ async function handleReceipt(env, msg) {
       if (copied && copied.ok) {
         delivered++;
         const cap = await send(env, id, [
-          `🧾 <b>رسید پرداخت</b> — ${esc(info.title)} (${esc(info.price)})`,
+          isAccount
+            ? `🧾 <b>رسید ثبت‌نام</b> — ${esc(info.title)} (${esc(info.price)})`
+            : `🧾 <b>رسید پرداخت</b> — ${esc(info.title)} (${esc(info.price)})`,
+          isAccount ? '📝 نوع: ساخت <b>حساب کاربری</b> (نام کاربری و رمز)' : '🔑 نوع: کد فعال‌سازی',
           `از: ${buyerLine(from)}`,
           `زمان رسید: <code>${faDateTime(ts)}</code> (تهران)`,
-        ].join('\n'), receiptButtons(from.id, pending.plan, ts));
+        ].join('\n'), receiptButtons(from.id, pending.plan, ts, isAccount));
         if (!(cap && cap.ok)) {
           // Photo arrived but the approve buttons did not — bolt them onto
           // the copied photo itself, otherwise the receipt is un-approvable.
           const fixed = await tg(env, 'editMessageCaption', {
             chat_id: id, message_id: copied.result.message_id,
-            caption: `🧾 رسید ${esc(info.title)} از ${esc(from.first_name || 'خریدار')} (id ${from.id})`,
+            caption: `${isAccount ? '🧾 رسید ثبت‌نام' : '🧾 رسید'} ${esc(info.title)} از ${esc(from.first_name || 'خریدار')} (id ${from.id})`,
             parse_mode: 'HTML',
-            reply_markup: receiptButtons(from.id, pending.plan, ts),
+            reply_markup: receiptButtons(from.id, pending.plan, ts, isAccount),
           });
           if (!(fixed && fixed.ok)) {
             errors.push(`buttons:${id}:${(fixed && fixed.description) || '؟'}`);
@@ -973,7 +1006,9 @@ async function handleReceipt(env, msg) {
     ].join('\n'));
   }
   return send(env, msg.chat.id,
-    '✅ رسید دریافت شد — بعد از تأیید ادمین، کد فعال‌سازی خودکار برایت ارسال می‌شود. 🍯');
+    isAccount
+      ? '✅ رسید دریافت شد — بعد از تأیید ادمین، <b>نام کاربری و رمز عبور</b> برایت ارسال می‌شود. 🍯'
+      : '✅ رسید دریافت شد — بعد از تأیید ادمین، کد فعال‌سازی خودکار برایت ارسال می‌شود. 🍯');
 }
 
 /** /diag — «چرا چیزی نمی‌آید؟» یک فرمان، کل زنجیره را لاپوشانی می‌کند:
@@ -1105,22 +1140,246 @@ async function rejectReceipt(env, cb, buyerId, plan, ts) {
 }
 
 // ---------------------------------------------------------------------------
-// Admin panel — a button-driven cockpit over every admin command. Callbacks
-// stay short (adm:/gen/genc:/st:/act:/buy:/pendx) and every one of them is
-// re-checked against ADMIN_IDS in the router before this code runs.
+// ثبت‌نام (self-registration) — the buyer taps 📝 in the menu and gets a real
+// username/password account issued straight into this chat. The 1-day trial
+// is instant (one per Telegram id, counted across BOTH kinds); paid plans
+// ride the same receipt flow as 🛍 خرید, but the approval mints an ACCOUNT
+// (pending_receipts.kind = 'account'), not a code.
 // ---------------------------------------------------------------------------
+
+const USERNAME_RE = /^[a-z0-9_.-]{3,32}$/;
+
+function randomUsername() {
+  const alphabet = '23456789abcdefghjkmnpqrstvwxyz';
+  const buf = new Uint8Array(7);
+  crypto.getRandomValues(buf);
+  let s = 'bee';
+  for (const b of buf) s += alphabet[b % alphabet.length];
+  return s;  // «bee» + 7 chars — collides astronomically rarely, and INSERT retries
+}
+
+/** Telegram display name + @handle for a numeric id (best effort — the
+ *  receipt approval callback only carries the id). */
+async function tgIdentity(env, uid) {
+  try {
+    const r = await tg(env, 'getChat', { chat_id: uid });
+    if (r && r.ok && r.result) {
+      const name = [r.result.first_name, r.result.last_name].filter(Boolean).join(' ').trim();
+      return { name: name || null, username: r.result.username || null };
+    }
+  } catch (_) { /* blocked bots and rate limits both land here */ }
+  return { name: null, username: null };
+}
+
+/** INSERT one account; retries on the (astronomically unlikely) username
+ *  collision. Returns the username, or null when every attempt collided. */
+async function insertAccount(env, { plan, days, password, tgId, tgName, tgUser, note }) {
+  const saltBytes = new Uint8Array(16);
+  crypto.getRandomValues(saltBytes);
+  const salt = b64urlEncode(saltBytes);
+  const hash = await pbkdf2Hash(password, salt);
+  for (let i = 0; i < 5; i++) {
+    const username = randomUsername();
+    try {
+      await env.DB.prepare(
+        'INSERT INTO accounts (username, pass_hash, pass_salt, plan, status, duration_days, '
+        + 'telegram_user_id, telegram_name, telegram_username, note, created_at) '
+        + 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      ).bind(username, hash, salt, plan, 'active', days, tgId || null, tgName || null,
+        tgUser || null, note || null, nowSec()).run();
+      return username;
+    } catch (e) {
+      if (String((e && e.message) || e).toLowerCase().includes('unique')) continue;
+      throw e;
+    }
+  }
+  return null;
+}
+
+function credentialsText(title, username, password, extra) {
+  return [
+    `📝 <b>${esc(title)}</b>`,
+    '',
+    `👤 نام کاربری: <code>${esc(username)}</code>`,
+    `🔑 رمز عبور: <code>${esc(password)}</code>`,
+    '',
+    ...extra,
+    '',
+    'اپ BEE-VPN را باز کن → زبانهٔ «👤 حساب کاربری» → همین دو را وارد کن.',
+    '⏱ اشتراک از لحظهٔ اولین ورود در اپ شروع می‌شود، نه از لحظهٔ ثبت‌نام.',
+    '⚠️ هر اشتراک فقط روی یک دستگاه فعال می‌شود.',
+  ].join('\n');
+}
+
+/** 📝 ثبت‌نام — the intro: what they get, then the plan keyboard. */
+async function regIntro(env, chatId) {
+  return send(env, chatId, [
+    '📝 <b>ثبت‌نام در کندو</b>',
+    '',
+    'به‌جای کد فعال‌سازی، یک <b>حساب کاربری</b> می‌گیری:',
+    '👤 نام کاربری + 🔑 رمز عبور — همین‌جا در همین چت.',
+    '',
+    'پلن را انتخاب کن 👇',
+    '🎁 تست ۱ روزه همان لحظه صادر می‌شود؛',
+    'پلن‌های خریدنی بعد از تأیید رسیدِ پرداخت ساخته می‌شوند.',
+  ].join('\n'), await regPlanKeyboard(env));
+}
+
+async function regPlanKeyboard(env) {
+  const list = await getPrices(env);
+  const rows = [[{ text: '🎁 تست ۱ روزه — رایگان', callback_data: 'regplan:trial' }]];
+  for (const [plan, info] of Object.entries(list)) {
+    rows.push([{ text: `${info.title} — ${info.price}`, callback_data: `regplan:${plan}` }]);
+  }
+  rows.push([{ text: '🔙 منوی اصلی', callback_data: 'menu' }]);
+  return { inline_keyboard: rows };
+}
+
+/** regplan:trial — the free 1-day trial as an ACCOUNT. One per Telegram id,
+ *  counted across BOTH kinds: an old trial CODE already taken blocks this. */
+async function giveTrialAccount(env, chatId, from) {
+  const tgId = from.id;
+  const prior = await env.DB.prepare(
+    // One prior trial row across BOTH entitlement kinds — a trial CODE taken
+    // long ago still closes the free ثبت‌نام. (SQLite forbids parenthesized
+    // compound arms, hence the FROM-subquery form.)
+    "SELECT x FROM (SELECT code AS x FROM licenses WHERE telegram_user_id = ? AND plan = 'trial' LIMIT 1) "
+    + "UNION ALL SELECT x FROM (SELECT username AS x FROM accounts WHERE telegram_user_id = ? AND plan = 'trial' LIMIT 1) "
+    + 'LIMIT 1',
+  ).bind(tgId, tgId).all();
+  const prev = (prior.results || [])[0];
+  if (prev) {
+    return send(env, chatId, [
+      '🎁 قبلاً تست یک‌روزه‌ات را برداشتی:',
+      prev.x.startsWith('BEE-') ? `🔑 <code>${esc(prev.x)}</code>` : `👤 <code>${esc(prev.x)}</code>`,
+      '',
+      'برای ادامهٔ اشتراک برو سراغ 🛍 خرید یا 📝 ثبت‌نام.',
+    ].join('\n'));
+  }
+  const password = randomPassword();
+  const username = await insertAccount(env, {
+    plan: 'trial', days: 1, password, tgId,
+    tgName: [from.first_name, from.last_name].filter(Boolean).join(' ').trim() || null,
+    tgUser: from.username || null,
+    note: `trial:${tgId}`,
+  });
+  if (!username) return send(env, chatId, '⚠️ ساخت حساب ناموفق بود — یک‌بار دیگر تلاش کن.');
+  return send(env, chatId, credentialsText('تست ۱ روزهٔ تو ساخته شد!', username, password, [
+    '🎁 پلن: تست ۱ روزه (رایگان)',
+  ]));
+}
+
+/** regplan:<paid> — same payment rails as 🛍 خرید; the pending row is stamped
+ *  kind='account' so the ✅ approval builds an account. */
+async function regPlanPaid(env, chatId, from, plan) {
+  if (!planDays(plan)) return send(env, chatId, 'پلن نامعتبر');
+  await setPending(env, from.id, plan, 'account');
+  await notifyAdmins(env,
+    `📝 ثبت‌نام: ${buyerLine(from)} پلن <b>${esc(((await getPrices(env))[plan] || {}).title || plan)}</b>`
+    + ' را برای ساخت <b>حساب کاربری</b> انتخاب کرد.\nاسکرین‌شاتش که رسید را با دکمهٔ ✅ تأیید کن —'
+    + ' نام کاربری و رمز خودکار برایش ارسال می‌شود.');
+  return send(env, chatId, await regPaymentText(env, plan), {
+    inline_keyboard: [[{ text: '🔙 بازگشت', callback_data: 'reg' }]],
+  });
+}
+
+async function regPaymentText(env, plan) {
+  const info = (await getPrices(env))[plan] || { title: plan, price: '?' };
+  const card = String(env.CARD_INFO || '(کارت به کارت: شماره کارت در env تنظیم نشده)');
+  const usdt = String(env.USDT_INFO || '(USDT TRC20: آدرس کیف پول در env تنظیم نشده)');
+  return [
+    `📝 <b>ثبت‌نام ${esc(info.title)}</b> — ${esc(info.price)}`,
+    '',
+    '💳 <b>پرداخت ریالی (کارت به کارت):</b>',
+    `<code>${esc(card)}</code>`,
+    '',
+    '💎 <b>پرداخت تتر (USDT):</b>',
+    `<code>${esc(usdt)}</code>`,
+    '',
+    '📌 بعد از پرداخت، <b>عکسِ رسید را مستقیم و بدون هیچ کامندی همین‌جا بفرست</b> (اسکرین‌شات).',
+    '✅ ادمین تأیید می‌کند و <b>نام کاربری و رمز عبور</b> تو همین‌جا ارسال می‌شود.',
+    '⏱ اشتراک از لحظهٔ اولین ورود در اپ شروع می‌شود، نه از لحظهٔ ثبت‌نام.',
+  ].join('\n');
+}
+
+/** Admin tapped ✅ on a ثبت‌نام receipt: mint the ACCOUNT, hand the
+ *  credentials to the buyer, close the ticket. Same anti-race pattern as
+ *  approveReceipt: accounts.note = receipt:<ts>:<buyerId> is the idempotency
+ *  key — two admins tapping at the same instant still mint exactly one. */
+async function approveAccountReceipt(env, cb, buyerId, plan, ts) {
+  const chatId = cb.message.chat.id;
+  const messageId = cb.message.message_id;
+  const note = `receipt:${ts}:${buyerId}`;
+  const existing = await env.DB.prepare('SELECT username FROM accounts WHERE note = ?').bind(note).first();
+  if (existing) {
+    await tg(env, 'editMessageText', {
+      chat_id: chatId, message_id: messageId,
+      text: `✅ این رسید قبلاً تأیید شده — حساب <code>${esc(existing.username)}</code> برای خریدار ارسال شد.`,
+    }).catch(() => {});
+    return answerCb(env, cb.id, 'این رسید قبلاً تأیید شده است');
+  }
+  const password = randomPassword();
+  const ident = await tgIdentity(env, buyerId);
+  const username = await insertAccount(env, {
+    plan, days: planDays(plan), password, tgId: buyerId,
+    tgName: ident.name, tgUser: ident.username, note,
+  });
+  if (!username) {
+    await tg(env, 'editMessageText', {
+      chat_id: chatId, message_id: messageId,
+      text: '⚠️ ساخت حساب ناموفق بود (تداخل نام کاربری) — دوباره تلاش کن.',
+    }).catch(() => {});
+    return answerCb(env, cb.id, 'ساخت ناموفق');
+  }
+  await clearPending(env, buyerId);
+  const delivered = await send(env, buyerId,
+    credentialsText('پرداخت شما تأیید شد — حساب کاربری تو ساخته شد!', username, password, [
+      `پلن: <b>${esc(((await getPrices(env))[plan] || {}).title || plan)}</b>`,
+    ]));
+  if (!(delivered && delivered.ok)) {
+    // Buyer probably blocked the bot: the account exists but the credentials
+    // would be lost — hand them to the admin instead of claiming delivery.
+    await tg(env, 'editMessageText', {
+      chat_id: chatId, message_id: messageId,
+      text: '⚠️ تأیید شد ولی <b>ارسال به خریدار ناموفق بود</b> (احتمالاً ربات را بلاک کرده است).\n'
+        + 'حساب را خودت دستی برایش بفرست:\n'
+        + `👤 <code>${esc(username)}</code>\n🔑 <code>${esc(password)}</code>`,
+    }).catch(() => {});
+    return answerCb(env, cb.id, 'حساب صادر شد — ارسال ناموفق!');
+  }
+  await tg(env, 'editMessageText', {
+    chat_id: chatId, message_id: messageId,
+    text: `✅ تأیید شد — حساب <code>${esc(username)}</code> برای خریدار (id <code>${buyerId}</code>) ارسال شد.`,
+  }).catch(() => {});
+  return answerCb(env, cb.id, 'حساب صادر و ارسال شد');
+}
+
+// ---------------------------------------------------------------------------
+// Admin panel — a button-driven cockpit over every admin command. Callbacks
+// stay short (adm:…) and every one of them is re-checked against ADMIN_IDS in
+// the router before this code runs.
+//
+//   pages      adm:buyers:<p> · adm:list:<p> · adm:regs:<p>
+//   guided     adm:gen (→ adm:gen:<plan> → adm:genc:<plan>:<n>)
+//              adm:au   (username → password → adm:au:<plan>)
+//              adm:search (next plain message is the query)
+//   cards      adm:vw:<K>:<id> with one-tap adm:ext/adm:st/adm:rst
+// ---------------------------------------------------------------------------
+
+const PAGE_SIZE = 10;
+const REG_PAGE_SIZE = 8;
 
 const ADMIN_HELP = [
   '🛠 <b>فرمان‌های ادمین</b> (همه در پنل دکمه‌ای هم هستند)',
-  '🛖 رسید خرید: عکسِ مشتری خودکار برای تو می‌آید — فقط دکمهٔ <b>✅ تأیید و ارسال کد</b> را بزن؛ کد صادر و خودکار برای خریدار ارسال می‌شود (❌ = رد).',
+  '🛖 رسید خرید: عکسِ مشتری خودکار برای تو می‌آید — فقط دکمهٔ <b>✅ تأیید</b> را بزن؛ کد یا حساب (رسید ثبت‌نام) صادر و خودکار برای خریدار ارسال می‌شود (❌ = رد).',
   '<code>/gen m3 5 تخفیف دوست</code> — ساخت کد دستی (تا ۵۰)',
-  '<code>/adduser user pass m1</code> — ساخت حساب',
-  '<code>/list 10</code> • <code>/who BEE-…</code>',
+  '<code>/adduser user pass m1</code> — ساخت حساب دستی',
+  '<code>/list 10</code> • <code>/who BEE-…|username|tg-id</code>',
+  '<code>/regs [صفحه]</code> — فهرست ثبت‌نامی‌ها با لینک تلگرام',
   '<code>/revoke …</code> • <code>/unrevoke …</code>',
   '<code>/extend … 30</code> • <code>/reset …</code>',
   '<code>/stats</code> — آمار کل + فروش ۷/۳۰ روز + سهم پلن‌ها',
   '<code>/buyers</code> — لیست خریداران با تعداد خرید',
-  '<code>/who 123456789</code> — تاریخچهٔ کامل یک خریدار',
   '<code>/price</code> — پنل دکمه‌ای قیمت‌ها',
   '<code>/panel</code> — پنل مدیریت کامل',
   '<code>/diag</code> — عیب‌یابی: وب‌هوک، قابل‌ارسال‌بودن ادمین‌ها، رسیدهای در انتظار',
@@ -1129,37 +1388,11 @@ const ADMIN_HELP = [
 function adminMenuKb() {
   return { inline_keyboard: [
     [{ text: '📊 داشبورد و آمار', callback_data: 'adm:stats' }, { text: '🧾 رسیدهای در انتظار', callback_data: 'adm:pend' }],
-    [{ text: '🎫 مدیریت اشتراک‌ها', callback_data: 'adm:lic' }],
-    [{ text: '👥 خریداران', callback_data: 'adm:buyers' }, { text: '💰 قیمت‌ها', callback_data: 'price_menu' }],
-    [{ text: '🩺 ابزار و عیب‌یابی', callback_data: 'adm:tools' }],
+    [{ text: '🎫 ساخت کد فعال‌سازی', callback_data: 'adm:gen' }, { text: '👤 ساخت حساب کاربری', callback_data: 'adm:au' }],
+    [{ text: '👥 خریداران', callback_data: 'adm:buyers:1' }, { text: '📝 ثبت‌نامی‌ها', callback_data: 'adm:regs:1' }],
+    [{ text: '🗒 آخرین کدها', callback_data: 'adm:list:1' }, { text: '🔍 جستجو و مدیریت', callback_data: 'adm:search' }],
+    [{ text: '💰 قیمت‌ها', callback_data: 'price_menu' }, { text: '🩺 ابزار و عیب‌یابی', callback_data: 'adm:tools' }],
     [{ text: '🔙 منوی اصلی', callback_data: 'menu' }],
-  ] };
-}
-
-function licMenuKb() {
-  return { inline_keyboard: [
-    [{ text: '➕ ساخت کد فعال‌سازی', callback_data: 'gen' }, { text: '👤 ساخت حساب کاربری', callback_data: 'st:adduser' }],
-    [{ text: '🔎 جستجوی اشتراک', callback_data: 'st:who' }, { text: '🗒 آخرین کدها', callback_data: 'adm:list' }],
-    [{ text: '⛔ لغو اشتراک', callback_data: 'st:revoke' }, { text: '✅ رفع لغو', callback_data: 'st:unrevoke' }],
-    [{ text: '➕ تمدید (روز)', callback_data: 'st:extend' }, { text: '🔁 ریست دستگاه', callback_data: 'st:reset' }],
-    [{ text: '🔙 پنل مدیریت', callback_data: 'adm' }],
-  ] };
-}
-
-function genPlanKb() {
-  return { inline_keyboard: [
-    [{ text: '🎁 تست ۱ روزه', callback_data: 'gen:trial' }, { text: '📅 یک‌ماهه m1', callback_data: 'gen:m1' }],
-    [{ text: '📅 سه‌ماهه m3', callback_data: 'gen:m3' }, { text: '📅 شش‌ماهه m6', callback_data: 'gen:m6' }],
-    [{ text: '📅 سالانه m12', callback_data: 'gen:m12' }],
-    [{ text: '🔙 مدیریت اشتراک‌ها', callback_data: 'adm:lic' }],
-  ] };
-}
-
-function genCountKb(plan) {
-  return { inline_keyboard: [
-    [{ text: '۱ کد', callback_data: `genc:${plan}:1` }, { text: '۵ کد', callback_data: `genc:${plan}:5` }, { text: '۱۰ کد', callback_data: `genc:${plan}:10` }],
-    [{ text: '۲۵ کد', callback_data: `genc:${plan}:25` }, { text: '۵۰ کد', callback_data: `genc:${plan}:50` }],
-    [{ text: '🔙 انتخاب پلن', callback_data: 'gen' }],
   ] };
 }
 
@@ -1171,11 +1404,147 @@ function toolsKb() {
   ] };
 }
 
+function genPlanKb() {
+  return { inline_keyboard: [
+    [{ text: '🎁 تست ۱ روزه', callback_data: 'adm:gen:trial' }, { text: '📅 یک‌ماهه m1', callback_data: 'adm:gen:m1' }],
+    [{ text: '📅 سه‌ماهه m3', callback_data: 'adm:gen:m3' }, { text: '📅 شش‌ماهه m6', callback_data: 'adm:gen:m6' }],
+    [{ text: '📅 سالانه m12', callback_data: 'adm:gen:m12' }],
+    [{ text: '🔙 پنل مدیریت', callback_data: 'adm' }],
+  ] };
+}
+
+function genCountKb(plan) {
+  return { inline_keyboard: [
+    [{ text: '۱ کد', callback_data: `adm:genc:${plan}:1` }, { text: '۵ کد', callback_data: `adm:genc:${plan}:5` }, { text: '۱۰ کد', callback_data: `adm:genc:${plan}:10` }],
+    [{ text: '۲۵ کد', callback_data: `adm:genc:${plan}:25` }, { text: '۵۰ کد', callback_data: `adm:genc:${plan}:50` }],
+    [{ text: '🔙 انتخاب پلن', callback_data: 'adm:gen' }, { text: '🔙 پنل مدیریت', callback_data: 'adm' }],
+  ] };
+}
+
+function pagerKb(prefix, page, totalPages) {
+  const row = [];
+  if (page > 1) row.push({ text: '◀️', callback_data: `${prefix}:${page - 1}` });
+  row.push({ text: `${faNum(page)}/${faNum(totalPages)}`, callback_data: 'adm:noop' });
+  if (page < totalPages) row.push({ text: '▶️', callback_data: `${prefix}:${page + 1}` });
+  row.push({ text: '🔙 پنل', callback_data: 'adm' });
+  return { inline_keyboard: [row] };
+}
+
+/** Buyers, one page at a time (the /buyers command keeps its own rollup). */
+async function buyersPage(env, pageRaw) {
+  const rows = await env.DB.prepare(
+    `SELECT telegram_user_id AS uid, COUNT(*) AS n,
+            SUM(CASE WHEN expires_at > ? THEN 1 ELSE 0 END) AS live,
+            SUM(CASE WHEN status = 'revoked' THEN 1 ELSE 0 END) AS banned,
+            MAX(created_at) AS last
+     FROM licenses WHERE telegram_user_id IS NOT NULL AND plan != 'trial'
+     GROUP BY telegram_user_id ORDER BY n DESC, last DESC LIMIT 200`,
+  ).bind(nowSec()).all();
+  const list = rows.results || [];
+  if (!list.length) {
+    return {
+      text: '👥 هنوز خریدی از طریق ربات ثبت نشده — بعد از اولین تأییدِ رسید، خریداران این‌جا لیست می‌شوند.',
+      kb: adminMenuKb(),
+    };
+  }
+  const totalPages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+  const p = Math.min(Math.max(1, pageRaw || 1), totalPages);
+  const now = nowSec();
+  const lines = [`👥 <b>خریداران</b> — ${faNum(list.length)} نفر (صفحهٔ ${faNum(p)} از ${faNum(totalPages)}):`, ''];
+  const slice = list.slice((p - 1) * PAGE_SIZE, p * PAGE_SIZE);
+  for (const r of slice) {
+    lines.push(
+      `<a href="tg://user?id=${r.uid}">${r.uid}</a> — ${faNum(r.n)} خرید • ${faNum(r.live)} در جریان`
+      + (r.banned ? ` • ⛔ ${faNum(r.banned)}` : '') + ` • ${faJalali(r.last)}`,
+    );
+  }
+  lines.push('', '🔎 تاریخچهٔ کامل: 🔍 جستجو ← شناسهٔ عددی را بفرست');
+  const kb = pagerKb('adm:buyers', p, totalPages);
+  for (const r of slice.slice(0, 6)) {
+    kb.inline_keyboard.unshift([{ text: `👤 ${r.uid} — ${faNum(r.n)} خرید`, callback_data: `adm:buyid:${r.uid}` }]);
+  }
+  return { text: lines.join('\n'), kb };
+}
+
+/** Latest codes AND accounts, one page at a time. */
+async function listPage(env, pageRaw) {
+  const lic = await env.DB.prepare(
+    'SELECT code AS subject, plan, status, expires_at, created_at FROM licenses ORDER BY created_at DESC LIMIT 200',
+  ).all();
+  const acc = await env.DB.prepare(
+    'SELECT username AS subject, plan, status, expires_at, created_at FROM accounts ORDER BY created_at DESC LIMIT 200',
+  ).all();
+  const list = [...(lic.results || []), ...(acc.results || [])].sort((a, b) => b.created_at - a.created_at);
+  if (!list.length) return { text: '🗒 هنوز کدی یا حسابی ساخته نشده است.', kb: adminMenuKb() };
+  const totalPages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+  const p = Math.min(Math.max(1, pageRaw || 1), totalPages);
+  const now = nowSec();
+  const lines = [`🗒 <b>آخرین کدها و حساب‌ها</b> — ${faNum(list.length)} ردیف (صفحهٔ ${faNum(p)} از ${faNum(totalPages)}):`, ''];
+  for (const r of list.slice((p - 1) * PAGE_SIZE, p * PAGE_SIZE)) {
+    const isAcc = !/^BEE-/.test(r.subject);
+    const live = r.expires_at ? (r.expires_at > now ? '🟢' : '🔴') : '⏳';
+    lines.push(`${live} ${isAcc ? '👤' : '🔑'} <code>${esc(r.subject)}</code> ${esc(r.plan)} ${r.status === 'active' ? '' : '⛔'} — ${faJalali(r.created_at)}`);
+  }
+  lines.push('', '🔎 مدیریت یک مورد: 🔍 جستجو ← کد یا نام کاربری را بفرست');
+  return { text: lines.join('\n'), kb: pagerKb('adm:list', p, totalPages) };
+}
+
+/** 📝 ثبت‌نامی‌ها — every account with its Telegram identity: the registered
+ *  name as a live link into the user's chat, the numeric id, the issued
+ *  username, plan/status, Jalali registration and expiry dates, device
+ *  binding. This is the operator's customer-service cockpit. */
+async function regsPage(env, pageRaw) {
+  const rows = await env.DB.prepare(
+    'SELECT username, plan, status, duration_days, telegram_user_id, telegram_name, telegram_username, '
+    + 'bound_install_id, activated_at, expires_at, created_at FROM accounts ORDER BY created_at DESC LIMIT 200',
+  ).all();
+  const list = rows.results || [];
+  if (!list.length) {
+    return {
+      text: '📝 هنوز ثبت‌نامی ثبت نشده.\n\nوقتی کسی در ربات «📝 ثبت‌نام» را بزند، همین‌جا با نامِ لینک‌شدهٔ تلگرام، حساب صادرشده و زمان‌ها لیست می‌شود.',
+      kb: adminMenuKb(),
+    };
+  }
+  const totalPages = Math.max(1, Math.ceil(list.length / REG_PAGE_SIZE));
+  const p = Math.min(Math.max(1, pageRaw || 1), totalPages);
+  const now = nowSec();
+  const live = list.filter((r) => r.status === 'active' && r.expires_at && r.expires_at > now).length;
+  const linked = list.filter((r) => r.telegram_user_id).length;
+  const lines = [
+    `📝 <b>ثبت‌نامی‌ها</b> — ${faNum(list.length)} حساب`,
+    `🟢 در جریان: ${faNum(live)} — 📱 فعال‌شده: ${faNum(list.filter((r) => r.bound_install_id).length)} — 🔗 تلگرامی: ${faNum(linked)}`,
+    `صفحهٔ ${faNum(p)} از ${faNum(totalPages)}`,
+    '',
+  ];
+  const kbRows = [];
+  for (const r of list.slice((p - 1) * REG_PAGE_SIZE, p * REG_PAGE_SIZE)) {
+    const st = subStatus(r, now);
+    const left = daysLeftOf(r, now);
+    const who = r.telegram_user_id
+      ? `<a href="tg://user?id=${r.telegram_user_id}">${esc(r.telegram_name || ('@' + (r.telegram_username || r.telegram_user_id)))}</a>`
+        + (r.telegram_name && r.telegram_username ? ` (@${esc(r.telegram_username)})` : '')
+        + ` — <code>${r.telegram_user_id}</code>`
+      : 'بدون تلگرام';
+    lines.push(`👤 ${who}`);
+    lines.push(`   🔑 <code>${esc(r.username)}</code> — ${esc(r.plan)} — ${st}`
+      + (r.expires_at ? ` — پایان: ${faJalali(r.expires_at)} (${faNum(left)} روز)` : ` — ${faNum(left)} روز از اولین ورود`));
+    lines.push(`   🕒 ثبت‌نام: ${faJalaliTime(r.created_at)}`
+      + (r.activated_at ? ` — فعال‌سازی: ${faJalali(r.activated_at)}` : '')
+      + (r.bound_install_id ? ' — 📱 متصل' : ''));
+    lines.push('');
+    const btnLabel = `⚙️ ${r.username}${r.telegram_name && r.username.length + r.telegram_name.length < 32 ? ' — ' + r.telegram_name : ''}`;
+    kbRows.push([{ text: btnLabel, callback_data: `adm:vw:A:${r.username}` }]);
+  }
+  const kb = pagerKb('adm:regs', p, totalPages);
+  kb.inline_keyboard = [...kbRows, ...kb.inline_keyboard];
+  return { text: lines.join('\n'), kb };
+}
+
 /** Pending plan choices: who is about to send a receipt for which plan. */
 async function pendView(env) {
   const back = { inline_keyboard: [[{ text: '🔙 پنل مدیریت', callback_data: 'adm' }]] };
   try {
-    const pend = await env.DB.prepare('SELECT tg_user_id, plan, ts FROM pending_receipts ORDER BY ts DESC').all();
+    const pend = await env.DB.prepare('SELECT tg_user_id, plan, ts, kind FROM pending_receipts ORDER BY ts DESC').all();
     const now = nowSec();
     const rows = pend.results || [];
     if (!rows.length) {
@@ -1191,7 +1560,8 @@ async function pendView(env) {
       const mins = Math.max(0, Math.round((now - r.ts) / 60));
       const stale = now - r.ts > PENDING_TTL ? ' (منقضی)' : '';
       const title = (priceMap[r.plan] && priceMap[r.plan].title) || r.plan;
-      lines.push(`• <a href="tg://user?id=${r.tg_user_id}">${r.tg_user_id}</a> → ${esc(title)} — ${faNum(mins)} دقیقه پیش${stale}`);
+      const kindTag = r.kind === 'account' ? '📝 حساب' : '🔑 کد';
+      lines.push(`• <a href="tg://user?id=${r.tg_user_id}">${r.tg_user_id}</a> → ${esc(title)} (${kindTag}) — ${faNum(mins)} دقیقه پیش${stale}`);
       kbRows.push([{ text: `🗑 پاک کردن انتخاب ${r.tg_user_id}`, callback_data: `pendx:${r.tg_user_id}` }]);
     }
     kbRows.push([{ text: '🔙 پنل مدیریت', callback_data: 'adm' }]);
@@ -1201,50 +1571,99 @@ async function pendView(env) {
   }
 }
 
-/** Apply one panel action (revoke/unrevoke/reset/extend) then re-render the
- *  who view so the admin immediately sees the new state. */
-async function actApply(env, kind, subject, op) {
-  const table = kind === 'L' ? 'licenses' : 'accounts';
-  const column = kind === 'L' ? 'code' : 'username';
-  const key = kind === 'L' ? String(subject).toUpperCase() : String(subject).toLowerCase();
-  if (op === 'rv' || op === 'un') {
+/** Apply one card action (extend / status / reset), then re-render the card
+ *  so the admin immediately sees the new state. */
+async function adminItemAction(env, kind, id, op, extra) {
+  const key = kind === 'L' ? String(id).toUpperCase() : String(id).toLowerCase();
+  const found = await lookup(env, key);
+  if (!found) return { text: '❌ پیدا نشد.', kb: adminMenuKb() };
+  const r = found.row;
+  const table = found.kind === 'license' ? 'licenses' : 'accounts';
+  const column = found.kind === 'license' ? 'code' : 'username';
+  if (op === 'ext') {
+    const days = parseInt(extra, 10) || 0;
+    if (days) {
+      if (!r.expires_at) {
+        await env.DB.prepare(`UPDATE ${table} SET duration_days = duration_days + ? WHERE ${column} = ?`).bind(days, r[column]).run();
+      } else {
+        const base = Math.max(nowSec(), r.expires_at);
+        await env.DB.prepare(`UPDATE ${table} SET expires_at = ? WHERE ${column} = ?`).bind(base + days * 86400, r[column]).run();
+      }
+    }
+  } else if (op === 'st') {
     await env.DB.prepare(`UPDATE ${table} SET status = ? WHERE ${column} = ?`)
-      .bind(op === 'rv' ? 'revoked' : 'active', key).run();
+      .bind(extra === 'active' ? 'active' : 'revoked', r[column]).run();
   } else if (op === 'rst') {
     await env.DB.prepare(`UPDATE ${table} SET bound_install_id = NULL, activated_at = NULL, expires_at = NULL WHERE ${column} = ?`)
-      .bind(key).run();
-  } else if (op === 'e30' || op === 'e90') {
-    const days = op === 'e30' ? 30 : 90;
-    const row = await env.DB.prepare(`SELECT * FROM ${table} WHERE ${column} = ?`).bind(key).first();
-    if (row && row.expires_at) {
-      const base = Math.max(nowSec(), row.expires_at);
-      await env.DB.prepare(`UPDATE ${table} SET expires_at = ? WHERE ${column} = ?`).bind(base + days * 86400, key).run();
-    } else if (row) {
-      await env.DB.prepare(`UPDATE ${table} SET duration_days = duration_days + ? WHERE ${column} = ?`).bind(days, key).run();
-    }
+      .bind(r[column]).run();
   }
   return whoView(env, key);
 }
 
-/** The next plain admin message while a st:<mode> state is armed. */
-async function runAdminText(env, chatId, mode, text) {
-  const parts = text.trim().split(/\s+/);
-  if (mode === 'who') return cmdWho(env, chatId, parts);
-  if (mode === 'revoke') return setStatus(env, chatId, parts, 'revoked');
-  if (mode === 'unrevoke') return setStatus(env, chatId, parts, 'active');
-  if (mode === 'extend') return cmdExtend(env, chatId, parts);
-  if (mode === 'reset') return cmdReset(env, chatId, parts);
-  if (mode === 'adduser') return cmdAddUser(env, chatId, parts);
+/** 👤 ساخت حساب — guided: username → password → plan. No syntax to remember. */
+async function adduserIntro(env, cb) {
+  const chatId = cb.message.chat.id;
+  const messageId = cb.message.message_id;
+  await setAdminState(env, cb.from.id, { mode: 'adduser', step: 'username' });
+  await tg(env, 'editMessageText', {
+    chat_id: chatId, message_id: messageId,
+    text: [
+      '👤 <b>ساخت حساب کاربری</b> — مرحلهٔ ۱ از ۳',
+      'نام کاربری را بفرست (۳ تا ۳۲ کاراکتر از a-z0-9_.-):',
+      '(لغو: <code>/cancel</code>)',
+    ].join('\n'),
+    parse_mode: 'HTML', reply_markup: adminMenuKb(),
+  }).catch(() => {});
+  return answerCb(env, cb.id);
 }
 
-const ADMIN_STATES = {
-  who: '🔎 <b>جستجوی اشتراک</b>\nکد فعال‌سازی، نام کاربری یا شناسهٔ عددی تلگرام را بفرست:\n(لغو: <code>/cancel</code>)',
-  revoke: '⛔ <b>لغو اشتراک</b>\nکد یا نام کاربری را بفرست:\n(لغو: <code>/cancel</code>)',
-  unrevoke: '✅ <b>رفع لغو</b>\nکد یا نام کاربری را بفرست:\n(لغو: <code>/cancel</code>)',
-  extend: '➕ <b>تمدید اشتراک</b>\nفرمت: <code>BEE-… 30</code> یا <code>username 30</code>:\n(لغو: <code>/cancel</code>)',
-  reset: '🔁 <b>ریست دستگاه</b>\nکد یا نام کاربری را بفرست — بایند پاک می‌شود و دستگاه بعدی از نو شروع می‌کند:\n(لغو: <code>/cancel</code>)',
-  adduser: '👤 <b>ساخت حساب کاربری</b>\nفرمت: <code>username password m1|m3|m6|m12</code>:\n(لغو: <code>/cancel</code>)',
-};
+/** The admin's plain message while an adduser flow is pending. */
+async function adduserStep(env, chatId, adminId, st, text) {
+  if (st.step === 'username') {
+    const username = text.trim().toLowerCase();
+    if (!USERNAME_RE.test(username)) {
+      await send(env, chatId, '❌ نام کاربری نامعتبر — ۳ تا ۳۲ کاراکتر از a-z0-9_.- — دوباره بفرست:');
+      return;  // keep the state so the next message retries
+    }
+    await setAdminState(env, adminId, { mode: 'adduser', step: 'password', username });
+    await send(env, chatId, `👤 نام کاربری: <b>${esc(username)}</b>\n🔑 مرحلهٔ ۲ از ۳ — رمز عبور را بفرست (حداقل ۶ کاراکتر):`);
+    return;
+  }
+  if (st.step === 'password') {
+    const password = text.trim();
+    if (password.length < 6) {
+      await send(env, chatId, '❌ رمز کوتاه است — حداقل ۶ کاراکتر، دوباره بفرست:');
+      return;
+    }
+    await setAdminState(env, adminId, { mode: 'adduser', step: 'plan', username: st.username, password });
+    await send(env, chatId, '🔑 رمز ثبت شد — مرحلهٔ ۳ از ۳، پلن را انتخاب کن:', {
+      inline_keyboard: [
+        ['m1', 'm3', 'm6', 'm12'].map((p) => ({ text: p, callback_data: `adm:au:${p}` })),
+      ],
+    });
+    return;
+  }
+  await clearAdminState(env, adminId);
+  await send(env, chatId, '↩️ جریان ساخت حساب لغو شد.');
+}
+
+/** The admin's plain message while a search is pending. */
+async function searchStep(env, chatId, adminId, text) {
+  await clearAdminState(env, adminId);
+  const q = text.trim();
+  if (/^\d{3,}$/.test(q)) {
+    const v = await whoBuyerView(env, parseInt(q, 10));
+    return send(env, chatId, v.text, v.kb);
+  }
+  const card = await whoView(env, q);
+  return send(env, chatId, card.text, card.kb);
+}
+
+/** The admin's next plain message while a guided flow is armed. */
+async function runAdminText(env, chatId, adminId, st, text) {
+  if (st.mode === 'search') return searchStep(env, chatId, adminId, text);
+  if (st.mode === 'adduser') return adduserStep(env, chatId, adminId, st, text);
+}
 
 async function handleAdminCb(env, cb, data) {
   const chatId = cb.message.chat.id;
@@ -1254,7 +1673,7 @@ async function handleAdminCb(env, cb, data) {
     disable_web_page_preview: true,
   }).catch(() => {});
 
-  if (data === 'adm') {
+  if (data === 'adm' || data === 'adm:panel') {
     let live = 0;
     try {
       const now = nowSec();
@@ -1271,16 +1690,7 @@ async function handleAdminCb(env, cb, data) {
     return answerCb(env, cb.id);
   }
   if (data === 'adm:stats') {
-    await edit(await statsText(env), { inline_keyboard: [[{ text: '🔙 پنل مدیریت', callback_data: 'adm' }]] });
-    return answerCb(env, cb.id);
-  }
-  if (data === 'adm:lic') {
-    await edit('🎫 <b>مدیریت اشتراک‌ها</b>\nساخت، جستجو، لغو، تمدید و ریست — همه از همین‌جا:', licMenuKb());
-    return answerCb(env, cb.id);
-  }
-  if (data === 'adm:buyers') {
-    const v = await buyersView(env, '15');
-    await edit(v.text, v.kb);
+    await edit(await statsText(env), adminMenuKb());
     return answerCb(env, cb.id);
   }
   if (data === 'adm:pend') {
@@ -1288,12 +1698,12 @@ async function handleAdminCb(env, cb, data) {
     await edit(v.text, v.kb);
     return answerCb(env, cb.id);
   }
-  if (data === 'adm:list') {
-    await edit(await listText(env, '10'), licMenuKb());
-    return answerCb(env, cb.id);
-  }
   if (data === 'adm:tools') {
     await edit('🩺 <b>ابزار و عیب‌یابی</b>', toolsKb());
+    return answerCb(env, cb.id);
+  }
+  if (data === 'adm:help') {
+    await edit(ADMIN_HELP, toolsKb());
     return answerCb(env, cb.id);
   }
   if (data === 'adm:diag') {
@@ -1301,63 +1711,95 @@ async function handleAdminCb(env, cb, data) {
     await cmdDiag(env, chatId);
     return;
   }
-  if (data === 'adm:help') {
-    await edit(ADMIN_HELP, toolsKb());
-    return answerCb(env, cb.id);
-  }
-  if (data === 'gen') {
+  if (data === 'adm:gen') {
     await edit('➕ <b>ساخت کد فعال‌سازی</b>\nپلن را انتخاب کن:', genPlanKb());
     return answerCb(env, cb.id);
   }
-  if (data.startsWith('gen:')) {
-    const plan = data.slice(4);
+  if (data.startsWith('adm:gen:')) {
+    const plan = data.slice(8);
     if (!planDays(plan)) return answerCb(env, cb.id, 'پلن نامعتبر');
     await edit(`➕ ساخت کد <b>${esc(plan)}</b> — چند کد؟`, genCountKb(plan));
     return answerCb(env, cb.id);
   }
-  if (data.startsWith('genc:')) {
-    const [, plan, countRaw] = data.split(':');
+  if (data.startsWith('adm:genc:')) {
+    const [, , plan, countRaw] = data.split(':');   // adm:genc:<plan>:<count>
     const count = Math.min(Math.max(parseInt(countRaw || '1', 10) || 1, 1), 50);
     if (!planDays(plan)) return answerCb(env, cb.id, 'پلن نامعتبر');
     await answerCb(env, cb.id, 'در حال ساخت…');
     await genCore(env, chatId, plan, count, null, null);
-    await edit(`✅ ${faNum(count)} کد <b>${esc(plan)}</b> ساخته و در پیام بالا ارسال شد.`, licMenuKb());
+    await edit(`✅ ${faNum(count)} کد <b>${esc(plan)}</b> ساخته و در پیام بالا ارسال شد.`, adminMenuKb());
     return;
   }
-  if (data.startsWith('st:')) {
-    const mode = data.slice(3);
-    if (!ADMIN_STATES[mode]) return answerCb(env, cb.id, 'نامعتبر');
-    await setAdminState(env, cb.from.id, { mode });
-    await edit(ADMIN_STATES[mode], licMenuKb());
+  if (data === 'adm:au') return adduserIntro(env, cb);
+  if (data.startsWith('adm:au:')) {
+    const plan = data.slice(7);
+    if (!planDays(plan)) return answerCb(env, cb.id, 'پلن نامعتبر');
+    const st = await getAdminState(env, cb.from.id);
+    if (!st || st.mode !== 'adduser' || !st.username || !st.password) {
+      await edit('⚠️ جریان ساخت حساب منقضی شده — دوباره «👤 ساخت حساب کاربری» را بزن.', adminMenuKb());
+      return answerCb(env, cb.id, 'منقضی');
+    }
+    await clearAdminState(env, cb.from.id);
+    const saltBytes = new Uint8Array(16);
+    crypto.getRandomValues(saltBytes);
+    const salt = b64urlEncode(saltBytes);
+    const hash = await pbkdf2Hash(st.password, salt);
+    try {
+      await env.DB.prepare(
+        'INSERT INTO accounts (username, pass_hash, pass_salt, plan, status, duration_days, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).bind(st.username, hash, salt, plan, 'active', planDays(plan), nowSec()).run();
+    } catch (e) {
+      await edit(`⚠️ ساخت حساب ناموفق بود (احتمالاً تکراری است): ${esc(String((e && e.message) || e))}`, adminMenuKb());
+      return answerCb(env, cb.id, 'ناموفق');
+    }
+    await edit(`👤 حساب <b>${esc(st.username)}</b> با پلن <b>${esc(plan)}</b> ساخته شد.\nرمز را همین حالا بردار (فقط hash ذخیره می‌شود):\n🔑 <code>${esc(st.password)}</code>`, adminMenuKb());
+    return answerCb(env, cb.id, 'ساخته شد');
+  }
+  if (data === 'adm:search') {
+    await setAdminState(env, cb.from.id, { mode: 'search' });
+    await edit('🔍 <b>جستجو و مدیریت</b>\nکد (<code>BEE-…</code>)، نام کاربری یا شناسهٔ عددی تلگرام را بفرست.\nلغو: <code>/cancel</code>', adminMenuKb());
     return answerCb(env, cb.id);
   }
-  if (data.startsWith('act:')) {
-    const parts = data.split(':');
-    const kind = parts[1];
-    const subject = parts[2] || '';
-    const op = parts[3] || 'vw';
-    if (kind !== 'L' && kind !== 'A') return answerCb(env, cb.id, 'نامعتبر');
-    if (!['rv', 'un', 'rst', 'e30', 'e90', 'vw'].includes(op)) return answerCb(env, cb.id, 'نامعتبر');
-    if (op !== 'vw') await actApply(env, kind, subject, op);
-    const v = await whoView(env, subject);
+  if (data === 'adm:buyers' || data.startsWith('adm:buyers:')) {
+    const p = parseInt(data.split(':')[2] || '1', 10) || 1;
+    const v = await buyersPage(env, p);
     await edit(v.text, v.kb);
-    return answerCb(env, cb.id,
-      op === 'rv' ? '⛔ باطل شد' : op === 'un' ? '✅ فعال شد' : op === 'rst' ? '🔁 ریست شد'
-        : op === 'e30' ? '➕ ۳۰ روز اضافه شد' : op === 'e90' ? '➕ ۹۰ روز اضافه شد' : 'بروزرسانی شد');
+    return answerCb(env, cb.id);
   }
-  if (data.startsWith('buy:')) {
-    const uid = parseInt(data.slice(4), 10);
+  if (data.startsWith('adm:buyid:')) {
+    const uid = parseInt(data.slice(10), 10);
     if (!uid) return answerCb(env, cb.id, 'نامعتبر');
     const v = await whoBuyerView(env, uid);
     await edit(v.text, v.kb);
     return answerCb(env, cb.id);
   }
-  if (data.startsWith('pendx:')) {
-    const uid = parseInt(data.slice(6), 10);
-    if (uid) await clearPending(env, uid);
-    const v = await pendView(env);
+  if (data === 'adm:list' || data.startsWith('adm:list:')) {
+    const p = parseInt(data.split(':')[2] || '1', 10) || 1;
+    const v = await listPage(env, p);
     await edit(v.text, v.kb);
-    return answerCb(env, cb.id, 'پاک شد');
+    return answerCb(env, cb.id);
+  }
+  if (data === 'adm:regs' || data.startsWith('adm:regs:')) {
+    const p = parseInt(data.split(':')[2] || '1', 10) || 1;
+    const v = await regsPage(env, p);
+    await edit(v.text, v.kb);
+    return answerCb(env, cb.id);
+  }
+  if (data.startsWith('adm:vw:')) {
+    const [, , kind, subject] = data.split(':');
+    const card = await whoView(env, subject || '');
+    await edit(card.text, card.kb);
+    return answerCb(env, cb.id);
+  }
+  if (data.startsWith('adm:ext:') || data.startsWith('adm:st:') || data.startsWith('adm:rst:')) {
+    const parts = data.split(':');   // adm:<op>:<K>:<id>[:<extra>]
+    const op = parts[1];
+    const kind = parts[2];
+    const id = parts[3] || '';
+    if ((kind !== 'L' && kind !== 'A') || !id) return answerCb(env, cb.id, 'نامعتبر');
+    const card = await adminItemAction(env, kind, id, op, parts[4]);
+    await edit(card.text, card.kb);
+    return answerCb(env, cb.id, op === 'ext' ? 'تمدید شد' : op === 'st' ? 'ثبت شد' : 'ریست شد');
   }
   return answerCb(env, cb.id);
 }
@@ -1401,15 +1843,21 @@ export default {
         } else if (data.startsWith('plan:')) {
           const plan = data.slice(5);
           const prev = await getPending(env, tgId);
-          if (planDays(plan) && (!prev || prev.plan !== plan)) {
-            await setPending(env, tgId, plan);
+          if (planDays(plan) && (!prev || prev.plan !== plan || prev.kind !== 'code')) {
+            await setPending(env, tgId, plan, 'code');
             await notifyAdmins(env, `🛒 خریدار ${buyerLine(cb.from)} پلن <b>${esc(((await getPrices(env))[plan] || {}).title || plan)}</b> را انتخاب کرد.\nاسکرین‌شاتش که رسید را با دکمهٔ ✅ تأیید کن — کد خودکار برایش ارسال می‌شود.`);
           } else if (planDays(plan)) {
-            await setPending(env, tgId, plan);
+            await setPending(env, tgId, plan, 'code');
           }
           await send(env, chatId, await paymentText(env, plan), {
             inline_keyboard: [[{ text: '🔙 بازگشت', callback_data: 'buy' }]],
           });
+        } else if (data === 'reg') {
+          await regIntro(env, chatId);
+        } else if (data.startsWith('regplan:')) {
+          const plan = data.slice(8);
+          if (plan === 'trial') await giveTrialAccount(env, chatId, cb.from);
+          else await regPlanPaid(env, chatId, cb.from, plan);
         } else if (data.startsWith('price:') || data.startsWith('pset:') ||
                    data === 'price_menu' || data === 'reset_ask' || data === 'reset_go') {
           if (!isAdmin(env, cb.from)) {
@@ -1433,19 +1881,44 @@ export default {
               await rejectReceipt(env, cb, buyerId, plan, ts);
             }
           }
+        } else if (data.startsWith('oka:')) {
+          if (!isAdmin(env, cb.from)) {
+            await answerCb(env, cb.id, 'فقط ادمین');
+          } else {
+            const parts = data.split(':');
+            const buyerId = parseInt(parts[1], 10);
+            const plan = parts[2] || '';
+            const ts = parseInt(parts[3], 10) || 0;
+            if (!buyerId || !planDays(plan)) {
+              await answerCb(env, cb.id, 'دادهٔ نامعتبر');
+            } else {
+              await approveAccountReceipt(env, cb, buyerId, plan, ts);
+            }
+          }
         } else if (data === 'trial') {
           await giveTrial(env, chatId, tgId);
         } else if (data === 'mysub') {
           await mySub(env, chatId, tgId, cb.from);
         } else if (data === 'help') {
           await send(env, chatId, HELP_TEXT);
-        } else if (data === 'adm' || data.startsWith('adm:') || data.startsWith('gen')
-                   || data.startsWith('st:') || data.startsWith('act:') || data.startsWith('buy:')
-                   || data.startsWith('pendx:')) {
+        } else if (data === 'adm' || data.startsWith('adm:')) {
           if (!isAdmin(env, cb.from)) {
             await answerCb(env, cb.id, 'فقط ادمین');
           } else {
             await handleAdminCb(env, cb, data);
+          }
+        } else if (data.startsWith('pendx:')) {
+          if (!isAdmin(env, cb.from)) {
+            await answerCb(env, cb.id, 'فقط ادمین');
+          } else {
+            const uid = parseInt(data.slice(6), 10);
+            if (uid) await clearPending(env, uid);
+            const v = await pendView(env);
+            await tg(env, 'editMessageText', {
+              chat_id: chatId, message_id: cb.message.message_id, text: v.text,
+              parse_mode: 'HTML', reply_markup: v.kb, disable_web_page_preview: true,
+            }).catch(() => send(env, chatId, v.text, v.kb));
+            await answerCb(env, cb.id, 'پاک شد');
           }
         }
         await answerCb(env, cb.id);
@@ -1462,12 +1935,14 @@ export default {
 
       if (text.startsWith('/start')) {
         await send(env, chatId, WELCOME, mainMenu(env, msg.from));
-        // Deep links from the app: ?start=buy opens the shop, ?start=trial
-        // hands out the 1-day code directly.
+        // Deep links from the apps: ?start=buy opens the shop, ?start=trial
+        // hands out the 1-day code, ?start=register opens ثبت‌نام.
         if (text.includes('buy')) {
           await send(env, chatId, '🛍 <b>پلن موردنظر را انتخاب کن:</b>', await planKeyboard(env));
         } else if (text.includes('trial')) {
           await giveTrial(env, chatId, tgId);
+        } else if (text.includes('register')) {
+          await regIntro(env, chatId);
         }
         return new Response('ok');
       }
@@ -1524,7 +1999,7 @@ export default {
 
       if (isAdmin(env, msg.from)) {
         // A pending panel prompt: the admin's next plain message IS the input
-        // (a price, a search key, a revoke target, a gen spec…).
+        // (a price, a search query, an adduser step…).
         if (!text.startsWith('/')) {
           const st = await getAdminState(env, msg.from.id);
           if (st && st.mode === 'price' && planDays(st.plan)) {
@@ -1532,9 +2007,8 @@ export default {
             if (applied) await clearAdminState(env, msg.from.id);
             return new Response('ok');
           }
-          if (st && ADMIN_STATES[st.mode]) {
-            await runAdminText(env, chatId, st.mode, text);
-            await clearAdminState(env, msg.from.id);
+          if (st && (st.mode === 'adduser' || st.mode === 'search')) {
+            await runAdminText(env, chatId, msg.from.id, st, text);
             return new Response('ok');
           }
         }
@@ -1546,6 +2020,10 @@ export default {
         else if (cmd === '/list') await cmdList(env, chatId, args);
         else if (cmd === '/who') await cmdWho(env, chatId, args);
         else if (cmd === '/buyers') await cmdBuyers(env, chatId, args);
+        else if (cmd === '/regs') {
+          const v = await regsPage(env, parseInt(args[0] || '1', 10) || 1);
+          await send(env, chatId, v.text, v.kb);
+        }
         else if (cmd === '/price') await cmdPrice(env, chatId, args);
         else if (cmd === '/revoke') await setStatus(env, chatId, args, 'revoked');
         else if (cmd === '/unrevoke') await setStatus(env, chatId, args, 'active');
@@ -1591,7 +2069,7 @@ export default {
       return new Response('ok');
     } catch (e) {
       console.error('webhook handler error:', e);
-      try { await send(env, update.message?.chat?.id || update.callback_query?.message?.chat?.id, `⚠️ خطا: ${esc(String(e.message || e))}`); } catch (_) {}
+      try { await send(env, update.message?.chat?.id || update.callback_query?.message?.chat?.id, `⚠️ خطا: ${esc(String((e && e.message) || e))}`); } catch (_) {}
       return new Response('ok');
     }
   },

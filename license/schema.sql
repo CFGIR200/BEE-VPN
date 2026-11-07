@@ -3,10 +3,15 @@
 --
 -- Two entitlement tables, one audit helper:
 --   licenses  — activation codes (paid plans and the 1-day trial alike).
---   accounts  — username/password subscriptions issued by the admin.
+--   accounts  — username/password subscriptions: issued by the admin via
+--               /adduser, or self-registered in the bot (ثبت‌نام), which
+--               stamps the Telegram identity on the row.
 -- Both share the same lifecycle: issued by the Telegram bot -> bound to one
 -- device on first activation (the clock starts there, not at purchase) ->
 -- renewed with /extend -> killed with /revoke.
+--
+-- Upgrading an existing database? Apply migrations/0002-registrations.sql —
+-- this file is only the fresh-install shape.
 
 CREATE TABLE IF NOT EXISTS licenses (
   code             TEXT PRIMARY KEY,          -- BEE-XXXX-XXXX-XXXX
@@ -28,7 +33,10 @@ CREATE TABLE IF NOT EXISTS accounts (
   plan             TEXT NOT NULL DEFAULT 'm1',
   status           TEXT NOT NULL DEFAULT 'active',
   duration_days    INTEGER NOT NULL DEFAULT 30,
-  telegram_user_id INTEGER,
+  telegram_user_id INTEGER,                   -- who registered (via the bot)
+  telegram_name    TEXT,                      -- display name at registration
+  telegram_username TEXT,                     -- @handle at registration (may be NULL)
+  note             TEXT,                      -- receipt:<ts>:<id> idempotency / trial:<id>
   bound_install_id TEXT,
   activated_at     INTEGER,
   expires_at       INTEGER,
@@ -53,12 +61,16 @@ CREATE TABLE IF NOT EXISTS settings (
 
 -- The buyer's latest plan choice: their next photo (no command needed)
 -- becomes the payment receipt for that plan. One row per buyer; cleared on
--- approval (see bot-worker.js "Purchase-by-receipt flow").
+-- approval (see bot-worker.js "Purchase-by-receipt flow"). kind decides what
+-- approval mints: 'code' (کد فعال‌سازی, the 🛍 flow) or 'account'
+-- (username/password, the 📝 ثبت‌نام flow).
 CREATE TABLE IF NOT EXISTS pending_receipts (
   tg_user_id  INTEGER PRIMARY KEY,
   plan        TEXT NOT NULL,
-  ts          INTEGER NOT NULL
+  ts          INTEGER NOT NULL,
+  kind        TEXT NOT NULL DEFAULT 'code'
 );
 
 CREATE INDEX IF NOT EXISTS idx_licenses_tg ON licenses (telegram_user_id);
 CREATE INDEX IF NOT EXISTS idx_accounts_tg ON accounts (telegram_user_id);
+CREATE INDEX IF NOT EXISTS idx_accounts_note ON accounts (note);

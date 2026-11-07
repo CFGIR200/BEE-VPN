@@ -188,11 +188,21 @@ ok(await drive(cb(905556034, 'mysub')) === 200, 'mysub → 200');
 ok(lastSentTo(905556034).includes('پروفایل تو در کندو'), 'کارت پروفایل ساخته شد');
 const licCode = (sentTo(905556034).map((c) => c.body.text || '').join('\n').match(/BEE-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}/) || [])[0];
 ok(!!licCode, 'کد خریدار پیدا شد');
-const expT = Math.floor(Date.UTC(2026, 10, 6, 12, 0, 0) / 1000); // = ۱۴۰۵/۰۸/۱۵ تهران
+const expT = Math.floor(Date.now() / 1000) + 15 * 86400; // همیشه در آینده — منقضی نشود
 env.DB.prepare('UPDATE licenses SET expires_at = ?, bound_install_id = ? WHERE code = ?').bind(expT, 'deadbeef1234', licCode).run();
 ok(await drive(cb(905556034, 'mysub')) === 200, 'mysub دوباره → 200');
 const prof = lastSentTo(905556034);
-ok(prof.includes('۱۴۰۵/۰۸/۱۵'), 'تاریخ شمسی درست: ۱۴۰۵/۰۸/۱۵');
+// همان مسیر رندر ربات: Intl تقویم فارسی به‌وقت تهران
+const faJ = (epoch) => {
+  try {
+    const parts = new Intl.DateTimeFormat('fa-IR-u-ca-persian-nu-arabext', {
+      timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit',
+    }).formatToParts(new Date(epoch * 1000));
+    const g = (t) => (parts.find((x) => x.type === t) || {}).value || '';
+    return `${g('year')}/${g('month')}/${g('day')}`;
+  } catch { return ''; }
+};
+ok(prof.includes(faJ(expT)), `تاریخ شمسی درست: ${faJ(expT)}`);
 ok(prof.includes('باقی‌مانده'), 'روزهای باقی‌مانده نشان داده شد');
 ok(prof.includes('در جریان'), 'خلاصهٔ اشتراک در جریان');
 ok(await drive(cb(424242, 'mysub')) === 200 && lastSentTo(424242).includes('هنوز اشتراکی نداری'), 'پروفایل کاربر بدون اشتراک');
@@ -254,6 +264,75 @@ section('T19 — محافظت پنل در برابر غیرادمین');
 ok(await drive(cb(777, 'adm:stats')) === 200, 'غیرادمین adm:stats → 200');
 const lastTwoAns = tg.filter((c) => c.method === 'answerCallbackQuery').slice(-2).map((c) => c.body?.text || '');
 ok(lastTwoAns.includes('فقط ادمین'), 'پاسخ «فقط ادمین»');
+
+// ===========================================================================
+// سیستم ثبت‌نام — 📝 در منو → حساب کاربری (نام کاربری و رمز) از تلگرام
+// ===========================================================================
+
+section('T20 — ثبت‌نام تست ۱ روزه: حساب کاربری همان لحظه صادر می‌شود');
+ok(await drive(cb(777, 'reg')) === 200, 'تپ 📝 ثبت‌نام → 200');
+ok(lastSentTo(777).includes('ثبت‌نام در کندو'), 'مقدمهٔ ثبت‌نام آمد');
+ok(await drive(cb(777, 'regplan:trial')) === 200, 'تپ regplan:trial → 200');
+const trialAcc = env.DB.prepare(
+  'SELECT username, plan, telegram_user_id, telegram_name, note FROM accounts WHERE telegram_user_id = 777 AND plan = ?',
+).bind('trial').first();
+ok(!!trialAcc && /^bee[a-z0-9]{7}$/.test(trialAcc.username), `حساب تست با نام کاربری تولیدشده ساخته شد (${trialAcc ? trialAcc.username : '—'})`);
+ok(trialAcc.telegram_user_id === 777 && trialAcc.note === 'trial:777', 'شناسهٔ تلگرام و note ثبت شد');
+ok(trialAcc.telegram_name === 'U777', 'نام تلگرام از from ذخیره شد');
+const credMsg = sentTo(777).map((c) => c.body.text || '').find((t) => t.includes('نام کاربری:'));
+ok(!!credMsg && credMsg.includes('رمز عبور') && credMsg.includes(trialAcc.username), 'نام کاربری و رمز برای کاربر ارسال شد');
+ok(await drive(cb(777, 'regplan:trial')) === 200, 'تپ دوبارهٔ regplan:trial → 200');
+ok(lastSentTo(777).includes('قبلاً تست'), 'دومین تست برای همان حساب تلگرام رد شد');
+ok(env.DB.prepare('SELECT COUNT(*) AS n FROM accounts WHERE telegram_user_id = 777 AND plan = ?').bind('trial').first().n === 1, 'هنوز فقط یک حساب تست');
+
+section('T20b — سقف تست بین دو نوع مشترک است (کد تست قبلی، ثبت‌نام تست را می‌بندد)');
+ok(await drive(cb(888, 'trial')) === 200, 'کاربر ۸۸۸ اول کد تست گرفت');
+ok(await drive(cb(888, 'regplan:trial')) === 200, 'بعد ثبت‌نام تست زد');
+ok(env.DB.prepare('SELECT COUNT(*) AS n FROM accounts WHERE telegram_user_id = 888 AND plan = ?').bind('trial').first().n === 0, 'حساب تست دومی صادر نشد (یک‌بار برای هر تلگرام)');
+ok(lastSentTo(888).includes('قبلاً تست'), 'پاسخ «قبلاً تست» به کد قبلی اشاره کرد');
+
+section('T21 — ثبت‌نام خریدنی: رسید → تأیید → حساب کاربری (نه کد)');
+ok(await drive(cb(555, 'regplan:m1')) === 200, 'تپ regplan:m1 → 200');
+const pendAcc = env.DB.prepare('SELECT plan, kind FROM pending_receipts WHERE tg_user_id = 555').first();
+ok(!!pendAcc && pendAcc.plan === 'm1' && pendAcc.kind === 'account', 'pending با kind=account ثبت شد');
+ok(lastSentTo(555).includes('ثبت‌نام'), 'راهنمای پرداخت ثبت‌نام آمد');
+ok(await drive(photoMsg(555)) === 200, 'عکس رسید ثبت‌نام → 200');
+const okaBtn = sentTo(111).map((c) => JSON.stringify(c.body.reply_markup || {})).map((s) => s.match(/oka:555:m1:\d+/)?.[0]).filter(Boolean).at(-1);
+ok(!!okaBtn, 'دکمهٔ «تأیید و ساخت حساب» با oka: آمد');
+ok(sentTo(111).some((c) => (c.body.text || '').includes('رسید ثبت‌نام')), 'کپشن «رسید ثبت‌نام» برای ادمین');
+const nAccBefore = env.DB.prepare('SELECT COUNT(*) AS n FROM accounts').first().n;
+ok(await drive(cb(222, okaBtn)) === 200, 'تپ ✅ ساخت حساب توسط ادمین 222 → 200');
+const accNote = env.DB.prepare('SELECT username, plan, telegram_user_id, note FROM accounts WHERE note = ?').bind('receipt:' + okaBtn.split(':')[3] + ':555').first();
+ok(!!accNote && accNote.plan === 'm1', 'حساب با note رسید صادر شد (ضد-دوباره‌کاری)');
+ok(env.DB.prepare('SELECT COUNT(*) AS n FROM accounts').first().n === nAccBefore + 1, 'دقیقاً یک حساب اضافه شد');
+ok(accNote.telegram_user_id === 555, 'حساب به خریدار تلگرامی بسته شد');
+const credToBuyer = sentTo(555).map((c) => c.body.text || '').find((t) => t.includes('حساب کاربری تو ساخته شد'));
+ok(!!credToBuyer && credToBuyer.includes(accNote.username), 'نام کاربری و رمز برای خریدار ارسال شد');
+ok(!env.DB.prepare('SELECT tg_user_id FROM pending_receipts WHERE tg_user_id=555').first(), 'pending پس از تأیید پاک شد');
+ok(await drive(cb(111, okaBtn)) === 200, 'تپ ✅ تکراری → 200');
+ok(tg.filter((c) => c.method === 'editMessageText').some((c) => (c.body.text || '').includes('قبلاً تأیید شده')), 'تأیید تکراری همان پاسخ امن را داد');
+ok(env.DB.prepare('SELECT COUNT(*) AS n FROM accounts WHERE note = ?').bind(accNote.note).first().n === 1, 'هنوز فقط یک حساب با آن رسید');
+
+section('T22 — پنل «📝 ثبت‌نامی‌ها»: لینک تلگرام، حساب، زمان‌ها');
+ok(await drive(cb(111, 'adm:regs:1')) === 200, 'adm:regs:1 → 200');
+const regsEdit = tg.filter((c) => c.method === 'editMessageText').at(-1)?.body || {};
+ok((regsEdit.text || '').includes('ثبت‌نامی‌ها'), 'عنوان «ثبت‌نامی‌ها»');
+ok((regsEdit.text || '').includes(`tg://user?id=777`), 'لینک تلگرام کاربر ثبت‌نامی (tg://user?id=…)');
+ok((regsEdit.text || '').includes(trialAcc.username), 'حساب صادرشده در لیست');
+ok((regsEdit.text || '').includes('ثبت‌نام:'), 'زمان ثبت‌نام (شمسی) نشان داده شد');
+ok(JSON.stringify(regsEdit.reply_markup || {}).includes(`adm:vw:A:${trialAcc.username}`), 'دکمهٔ ⚙️ بازکردن کارت مدیریت');
+ok(await drive(cb(111, `adm:vw:A:${trialAcc.username}`)) === 200, 'کارت مدیریت حساب → 200');
+const accCard = tg.filter((c) => c.method === 'editMessageText').at(-1)?.body || {};
+ok((accCard.text || '').includes('تلگرام:'), 'کارت: ردیف تلگرام با لینک');
+ok(JSON.stringify(accCard.reply_markup || {}).includes(`adm:ext:A:${trialAcc.username}:30`), 'کارت: دکمهٔ تمدید ۳۰ روزه');
+ok(await drive(textMsg(111, '/regs')) === 200, 'فرمان /regs → 200');
+ok(lastSentTo(111).includes('ثبت‌نامی‌ها'), '/regs همان فهرست را فرستاد');
+ok(await drive(textMsg(111, '/stats')) === 200, '/stats → 200');
+ok(lastSentTo(111).includes('ثبت‌نامی‌ها'), 'آمار شامل ردیف ثبت‌نامی‌ها');
+
+section('T23 — دیپ‌لینک اپ: /start register');
+ok(await drive(textMsg(424242, '/start register')) === 200, '/start register → 200');
+ok(lastSentTo(424242).includes('ثبت‌نام در کندو'), 'دیپ‌لینک مستقیم به جریان ثبت‌نام رسید');
 
 console.log(`\n═══ نتیجه: ${pass} پاس ✅ — ${fail} شکست ❌ ═══`);
 process.exitCode = fail ? 1 : 0;

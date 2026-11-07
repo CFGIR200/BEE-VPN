@@ -134,6 +134,7 @@ object LicenseManager {
         if (!hadToken) SecureStore.put(K_ACTIVATED_AT, now.toString())
         SecureStore.put(K_LAST_CHECK, now.toString())
         lastVerifyAt = now
+        lockReason = null   // a fresh entitlement washes the old «منقضی/باطل» banner
         gate = Gate.GRANTED
         return null
     }
