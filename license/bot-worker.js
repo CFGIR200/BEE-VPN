@@ -827,29 +827,12 @@ async function cmdList(env, chatId, args) {
   return send(env, chatId, await listText(env, args[0] || '10'));
 }
 
-async function giveTrial(env, chatId, tgId) {
-  // Atomic one-per-account: the INSERT only lands if no trial row exists yet,
-  // so a double-tap on 🎁 can never mint two codes.
-  const code = randomCode();
-  const ins = await env.DB.prepare(
-    'INSERT INTO licenses (code, plan, status, duration_days, note, telegram_user_id, created_at) '
-    + 'SELECT ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS '
-    + "(SELECT 1 FROM licenses WHERE telegram_user_id = ? AND plan = 'trial')",
-  ).bind(code, 'trial', 'active', 1, `trial:${tgId}`, tgId, nowSec(), tgId).run();
-  if (!ins.meta || !ins.meta.changes) {
-    const prior = await env.DB.prepare(
-      "SELECT code FROM licenses WHERE telegram_user_id = ? AND plan = 'trial' LIMIT 1",
-    ).bind(tgId).first();
-    return send(env, chatId, `🎁 قبلاً کد تست گرفتی: <code>${esc(prior ? prior.code : '')}</code>\nاگر منقضی شده، برای ادامه اشتراک برو سراغ 🛍 خرید.`);
-  }
-  return send(env, chatId, [
-    '🎁 <b>کد تست ۱ روزهٔ تو:</b>',
-    `<code>${esc(code)}</code>`,
-    '',
-    'اپ BEE-VPN را باز کن → «کد فعال‌سازی» → این کد را وارد کن.',
-    '⏱ ۲۴ ساعت از لحظهٔ فعال‌سازی در اپ شروع می‌شود.',
-  ].join('\n'));
-}
+/** 🎁 «کد تست ۱ روزه» — the legacy button now rides the ثبت‌نام flow:
+ *  one coherent package (profile account + 1-day license) and the
+ *  one-trial-per-Telegram cap enforced across BOTH kinds in one place.
+ *  See giveTrialAccount() — the old code-only trial let a registered user
+ *  take a SECOND trial through this button (the cap here only counted
+ *  licenses, not trial accounts). */
 
 /** Buyer profile — the «👤 پروفایل من» view: every code/account with plan
  *  title, status, Jalali activation/expiry dates, days remaining and device
@@ -883,7 +866,11 @@ async function mySub(env, chatId, tgId, from) {
       '',
       'اگر پشتیبانی برایت کد ساخته، با این فرمت به پروفایلت وصلش کن:',
       '<code>/link BEE-XXXX-XXXX-XXXX</code>',
-    ].join('\n'), { inline_keyboard: [[{ text: '🛍 خرید اشتراک', callback_data: 'buy' }]] });
+    ].join('\n'), { inline_keyboard: [
+    [{ text: '🛍 خرید اشتراک', callback_data: 'buy' }],
+    [{ text: '📣 کانال', url: String(env.CHANNEL_URL || 'https://t.me/BEESELL_GP') },
+     { text: '💬 پشتیبانی', url: String(env.SUPPORT_URL || 'https://t.me/Bee_hive_VPN') }],
+  ] });
   }
   const lines = [
     '👤 <b>پروفایل تو در کندو</b>',
@@ -918,6 +905,8 @@ async function mySub(env, chatId, tgId, from) {
   return send(env, chatId, lines.join('\n'), {
     inline_keyboard: [
       [{ text: '🛍 خرید / تمدید', callback_data: 'buy' }, { text: '🔄 بروزرسانی', callback_data: 'mysub' }],
+      [{ text: '📣 کانال', url: String(env.CHANNEL_URL || 'https://t.me/BEESELL_GP') },
+       { text: '💬 پشتیبانی', url: String(env.SUPPORT_URL || 'https://t.me/Bee_hive_VPN') }],
       [{ text: '🔙 منوی اصلی', callback_data: 'menu' }],
     ],
   });
@@ -996,7 +985,11 @@ async function handleReceipt(env, msg) {
       '🧾 برای ارسال رسید، اول پلن موردنظرت را انتخاب کن 👇',
       await planKeyboard(env));
   }
-  const ts = nowSec();
+  // Milliseconds: the receipt ts doubles as the idempotency key
+  // (licenses.note = receipt:<ts>:<buyerId>). Second granularity collided
+  // when a buyer sent two receipts within the same second — the second one
+  // was silently swallowed as "already approved".
+  const ts = Date.now();
   const info = (await getPrices(env))[pending.plan] || { title: pending.plan, price: '?' };
   // A registration receipt (kind='account') mints a username/password, not a
   // code — the caption and the ✅ button both say so, so the admin always
@@ -1025,7 +1018,7 @@ async function handleReceipt(env, msg) {
             : `🧾 <b>رسید پرداخت</b> — ${esc(info.title)} (${esc(info.price)})`,
           isAccount ? '📝 نوع: ساخت <b>حساب کاربری</b> (نام کاربری و رمز)' : '🔑 نوع: کد فعال‌سازی',
           `از: ${buyerLine(from)}`,
-          `زمان رسید: <code>${faDateTime(ts)}</code> (تهران)`,
+          `زمان رسید: <code>${faDateTime(Math.floor(ts / 1000))}</code> (تهران)`,
         ].join('\n'), receiptButtons(from.id, pending.plan, ts, isAccount));
         if (!(cap && cap.ok)) {
           // Photo arrived but the approve buttons did not — bolt them onto
@@ -1126,7 +1119,15 @@ async function cmdDiag(env, chatId) {
 }
 
 /** Admin tapped ✅: issue the code, hand it to the buyer, close the ticket. */
-async function approveReceipt(env, cb, buyerId, plan, ts) {
+/** ✅ on ANY receipt (🛍 code-flow «ok:» or 📝 account-flow «oka:») — the
+ *  buyer always gets the FULL package:
+ *    👤 profile account (reused if they already have one) +
+ *    🎫 license code for the app (the thing that expires and locks it).
+ *  Idempotency: licenses.note = receipt:<ts>:<buyerId> — two admins racing
+ *  on the same receipt (either button flavour) still mint exactly one code.
+ *  After expiry the profile survives: /profile keeps the buyer in touch with
+ *  the channel/support and one tap away from the next purchase. */
+async function fulfillReceipt(env, cb, buyerId, plan, ts) {
   const chatId = cb.message.chat.id;
   const messageId = cb.message.message_id;
   const note = `receipt:${ts}:${buyerId}`;
@@ -1157,30 +1158,65 @@ async function approveReceipt(env, cb, buyerId, plan, ts) {
     return answerCb(env, cb.id, 'این رسید قبلاً تأیید شده است');
   }
   await clearPending(env, buyerId);
-  const delivered = await send(env, buyerId, [
+  // Profile: reuse the buyer's account, or mint one on the spot.
+  const ident = await tgIdentity(env, buyerId);
+  const prior = await env.DB.prepare(
+    'SELECT username FROM accounts WHERE telegram_user_id = ? ORDER BY created_at DESC LIMIT 1',
+  ).bind(buyerId).first();
+  let username = prior ? prior.username : null;
+  let password = null;
+  if (username) {
+    password = null;  // hashed — never re-shown; the buyer keeps theirs
+  } else {
+    password = randomPassword();
+    username = await insertAccount(env, {
+      plan, days: planDays(plan), password, tgId: buyerId,
+      tgName: ident.name, tgUser: ident.username, note: null,
+    });
+  }
+  const lines = [
     '🍯 <b>پرداخت شما تأیید شد!</b>',
     `پلن: <b>${esc(((await getPrices(env))[plan] || {}).title || plan)}</b>`,
     '',
-    '🔑 <b>کد فعال‌سازی تو:</b>',
+  ];
+  if (username) {
+    lines.push(`👤 <b>پروفایل تو:</b> <code>${esc(username)}</code>`);
+    if (password) {
+      lines.push(`🔑 <b>رمز عبور:</b> <code>${esc(password)}</code>`);
+    } else {
+      lines.push('(رمز قبلی‌ات بدون تغییر کار می‌کند)');
+    }
+    lines.push('');
+  }
+  lines.push(
+    '🎫 <b>لایسنس برنامه (کندو قفله):</b>',
     `<code>${esc(code)}</code>`,
     '',
-    'اپ BEE-VPN را باز کن → «کد فعال‌سازی» → کد را وارد کن.',
+    'اپ BEE-VPN را باز کن → «کد فعال‌سازی» → این کد را وارد کن.',
     '⏱ اشتراک از لحظهٔ اولین فعال‌سازی در اپ شروع می‌شود.',
-  ].join('\n'));
+    '👤 پروفایل‌ات در ربات: «👤 پروفایل من» — بعد از انقضا هم از همان‌جا می‌توانی بخری و تمدید کنی.',
+  );
+  const delivered = await send(env, buyerId, lines.join('\n'));
   if (!(delivered && delivered.ok)) {
-    // Buyer probably blocked the bot: the code exists but would be lost —
-    // hand it to the admin instead of claiming it was delivered.
+    // Buyer probably blocked the bot: the entitlements exist but would be
+    // lost — hand them to the admin instead of claiming delivery.
     await tg(env, 'editMessageText', {
       chat_id: chatId, message_id: messageId,
-      text: '⚠️ تأیید شد ولی <b>ارسال به خریدار ناموفق بود</b> (احتمالاً ربات را بلاک کرده است).\nکد را خودت دستی برایش بفرست:\n<code>' + esc(code) + '</code>',
+      text: '⚠️ تأیید شد ولی <b>ارسال به خریدار ناموفق بود</b> (احتمالاً ربات را بلاک کرده است).\nدستی برایش بفرست:\n'
+        + (username ? `👤 <code>${esc(username)}</code>${password ? `\n🔑 <code>${esc(password)}</code>` : ''}\n` : '')
+        + `🎫 <code>${esc(code)}</code>`,
     }).catch(() => {});
-    return answerCb(env, cb.id, 'کد صادر شد — ارسال ناموفق!');
+    return answerCb(env, cb.id, 'صادر شد — ارسال ناموفق!');
   }
   await tg(env, 'editMessageText', {
     chat_id: chatId, message_id: messageId,
-    text: `✅ تأیید شد — کد <code>${esc(code)}</code> برای خریدار (id <code>${buyerId}</code>) ارسال شد.`,
+    text: `✅ تأیید شد — لایسنس <code>${esc(code)}</code>${username ? ` و پروفایل <code>${esc(username)}</code>` : ''} برای خریدار (id <code>${buyerId}</code>) ارسال شد.`,
   }).catch(() => {});
-  return answerCb(env, cb.id, 'کد صادر و ارسال شد');
+  return answerCb(env, cb.id, 'لایسنس صادر و ارسال شد');
+}
+
+async function approveReceipt(env, cb, buyerId, plan, ts) {
+  return fulfillReceipt(env, cb, buyerId, plan, ts);
 }
 
 /** Admin tapped ❌: tell the buyer kindly; the plan choice stays active so a
@@ -1202,11 +1238,11 @@ async function rejectReceipt(env, cb, buyerId, plan, ts) {
 }
 
 // ---------------------------------------------------------------------------
-// ثبت‌نام (self-registration) — the buyer taps 📝 in the menu and gets a real
-// username/password account issued straight into this chat. The 1-day trial
-// is instant (one per Telegram id, counted across BOTH kinds); paid plans
-// ride the same receipt flow as 🛍 خرید, but the approval mints an ACCOUNT
-// (pending_receipts.kind = 'account'), not a code.
+// ثبت‌نام (self-registration) — the buyer taps 📝 in the menu and gets a full
+// package: profile account (username/password) + a license code for the app.
+// The 1-day trial is instant (one per Telegram id, counted across BOTH
+// kinds); paid plans ride the same receipt flow as 🛍 خرید and BOTH approval
+// buttons (ok:/oka:) land on the same unified fulfillReceipt().
 // ---------------------------------------------------------------------------
 
 const USERNAME_RE = /^[a-z0-9_.-]{3,32}$/;
@@ -1263,13 +1299,13 @@ function credentialsText(title, username, password, extra) {
     `📝 <b>${esc(title)}</b>`,
     '',
     `👤 نام کاربری: <code>${esc(username)}</code>`,
-    `🔑 رمز عبور: <code>${esc(password)}</code>`,
+    ...(password ? [`🔑 رمز عبور: <code>${esc(password)}</code>`] : []),
     '',
     ...extra,
     '',
-    'اپ BEE-VPN را باز کن → زبانهٔ «👤 حساب کاربری» → همین دو را وارد کن.',
-    '⏱ اشتراک از لحظهٔ اولین ورود در اپ شروع می‌شود، نه از لحظهٔ ثبت‌نام.',
-    '⚠️ هر اشتراک فقط روی یک دستگاه فعال می‌شود.',
+    '👤 این نام کاربری/رمز، پروفایل توست — «👤 پروفایل من» در همین ربات.',
+    '⏱ اشتراک از لحظهٔ اولین فعال‌سازی لایسنس در اپ شروع می‌شود، نه از لحظهٔ خرید.',
+    '⚠️ هر لایسنس فقط روی یک دستگاه فعال می‌شود.',
   ].join('\n');
 }
 
@@ -1326,8 +1362,20 @@ async function giveTrialAccount(env, chatId, from) {
     note: `trial:${tgId}`,
   });
   if (!username) return send(env, chatId, '⚠️ ساخت حساب ناموفق بود — یک‌بار دیگر تلاش کن.');
+  // The 1-day license rides along: username/password open the PROFILE, the
+  // license code is what unlocks the APP (کندو قفله).
+  const licCode = randomCode();
+  await env.DB.prepare(
+    'INSERT INTO licenses (code, plan, status, duration_days, note, telegram_user_id, created_at) '
+    + 'VALUES (?, ?, ?, ?, ?, ?, ?)',
+  ).bind(licCode, 'trial', 'active', 1, `trial:${tgId}`, tgId, nowSec()).run();
   return send(env, chatId, credentialsText('تست ۱ روزهٔ تو ساخته شد!', username, password, [
     '🎁 پلن: تست ۱ روزه (رایگان)',
+    '',
+    '🎫 <b>لایسنس برنامه (کندو قفله):</b>',
+    `<code>${esc(licCode)}</code>`,
+    'اپ را باز کن → «کد فعال‌سازی» → این کد را وارد کن.',
+    '⏱ ۲۴ ساعت از لحظهٔ فعال‌سازی در اپ شروع می‌شود.',
   ]));
 }
 
@@ -1365,56 +1413,10 @@ async function regPaymentText(env, plan) {
   ].join('\n');
 }
 
-/** Admin tapped ✅ on a ثبت‌نام receipt: mint the ACCOUNT, hand the
- *  credentials to the buyer, close the ticket. Same anti-race pattern as
- *  approveReceipt: accounts.note = receipt:<ts>:<buyerId> is the idempotency
- *  key — two admins tapping at the same instant still mint exactly one. */
+/** Admin tapped ✅ on a ثبت‌نام receipt — same unified fulfillment as 🛍:
+ *  profile account + license code, both delivered (see fulfillReceipt). */
 async function approveAccountReceipt(env, cb, buyerId, plan, ts) {
-  const chatId = cb.message.chat.id;
-  const messageId = cb.message.message_id;
-  const note = `receipt:${ts}:${buyerId}`;
-  const existing = await env.DB.prepare('SELECT username FROM accounts WHERE note = ?').bind(note).first();
-  if (existing) {
-    await tg(env, 'editMessageText', {
-      chat_id: chatId, message_id: messageId,
-      text: `✅ این رسید قبلاً تأیید شده — حساب <code>${esc(existing.username)}</code> برای خریدار ارسال شد.`,
-    }).catch(() => {});
-    return answerCb(env, cb.id, 'این رسید قبلاً تأیید شده است');
-  }
-  const password = randomPassword();
-  const ident = await tgIdentity(env, buyerId);
-  const username = await insertAccount(env, {
-    plan, days: planDays(plan), password, tgId: buyerId,
-    tgName: ident.name, tgUser: ident.username, note,
-  });
-  if (!username) {
-    await tg(env, 'editMessageText', {
-      chat_id: chatId, message_id: messageId,
-      text: '⚠️ ساخت حساب ناموفق بود (تداخل نام کاربری) — دوباره تلاش کن.',
-    }).catch(() => {});
-    return answerCb(env, cb.id, 'ساخت ناموفق');
-  }
-  await clearPending(env, buyerId);
-  const delivered = await send(env, buyerId,
-    credentialsText('پرداخت شما تأیید شد — حساب کاربری تو ساخته شد!', username, password, [
-      `پلن: <b>${esc(((await getPrices(env))[plan] || {}).title || plan)}</b>`,
-    ]));
-  if (!(delivered && delivered.ok)) {
-    // Buyer probably blocked the bot: the account exists but the credentials
-    // would be lost — hand them to the admin instead of claiming delivery.
-    await tg(env, 'editMessageText', {
-      chat_id: chatId, message_id: messageId,
-      text: '⚠️ تأیید شد ولی <b>ارسال به خریدار ناموفق بود</b> (احتمالاً ربات را بلاک کرده است).\n'
-        + 'حساب را خودت دستی برایش بفرست:\n'
-        + `👤 <code>${esc(username)}</code>\n🔑 <code>${esc(password)}</code>`,
-    }).catch(() => {});
-    return answerCb(env, cb.id, 'حساب صادر شد — ارسال ناموفق!');
-  }
-  await tg(env, 'editMessageText', {
-    chat_id: chatId, message_id: messageId,
-    text: `✅ تأیید شد — حساب <code>${esc(username)}</code> برای خریدار (id <code>${buyerId}</code>) ارسال شد.`,
-  }).catch(() => {});
-  return answerCb(env, cb.id, 'حساب صادر و ارسال شد');
+  return fulfillReceipt(env, cb, buyerId, plan, ts);
 }
 
 // ---------------------------------------------------------------------------
@@ -1960,7 +1962,7 @@ export default {
             }
           }
         } else if (data === 'trial') {
-          await giveTrial(env, chatId, tgId);
+          await giveTrialAccount(env, chatId, cb.from);
         } else if (data === 'mysub') {
           await mySub(env, chatId, tgId, cb.from);
         } else if (data === 'help') {
@@ -2004,7 +2006,7 @@ export default {
         if (text.includes('buy')) {
           await send(env, chatId, '🛍 <b>پلن موردنظر را انتخاب کن:</b>', await planKeyboard(env));
         } else if (text.includes('trial')) {
-          await giveTrial(env, chatId, tgId);
+          await giveTrialAccount(env, chatId, msg.from);
         } else if (text.includes('register')) {
           await regIntro(env, chatId);
         }

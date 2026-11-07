@@ -285,13 +285,18 @@ ok(await drive(cb(777, 'regplan:trial')) === 200, 'تپ دوبارهٔ regplan:t
 ok(lastSentTo(777).includes('قبلاً تست'), 'دومین تست برای همان حساب تلگرام رد شد');
 ok(env.DB.prepare('SELECT COUNT(*) AS n FROM accounts WHERE telegram_user_id = 777 AND plan = ?').bind('trial').first().n === 1, 'هنوز فقط یک حساب تست');
 
-section('T20b — سقف تست بین دو نوع مشترک است (کد تست قبلی، ثبت‌نام تست را می‌بندد)');
-ok(await drive(cb(888, 'trial')) === 200, 'کاربر ۸۸۸ اول کد تست گرفت');
-ok(await drive(cb(888, 'regplan:trial')) === 200, 'بعد ثبت‌نام تست زد');
-ok(env.DB.prepare('SELECT COUNT(*) AS n FROM accounts WHERE telegram_user_id = 888 AND plan = ?').bind('trial').first().n === 0, 'حساب تست دومی صادر نشد (یک‌بار برای هر تلگرام)');
-ok(lastSentTo(888).includes('قبلاً تست'), 'پاسخ «قبلاً تست» به کد قبلی اشاره کرد');
+section('T20b — 🎁 و 📝 یک بسته می‌دهند (حساب + لایسنس) و سقفشان یکی است');
+ok(await drive(cb(888, 'trial')) === 200, 'کاربر ۸۸۸ 🎁 را زد');
+ok(lastSentTo(888).includes('نام کاربری') && lastSentTo(888).includes('رمز عبور'), 'بستهٔ تست: نام کاربری و رمز آمد');
+ok(lastSentTo(888).includes('لایسنس برنامه'), 'بستهٔ تست: لایسنس کد هم آمد');
+ok(env.DB.prepare('SELECT COUNT(*) AS n FROM accounts WHERE telegram_user_id = 888 AND plan = ?').bind('trial').first().n === 1, 'حساب تست صادر شد');
+ok(env.DB.prepare('SELECT COUNT(*) AS n FROM licenses WHERE telegram_user_id = 888 AND plan = ?').bind('trial').first().n === 1, 'لایسنس تست صادر شد (با حساب، هم‌زمان)');
+ok(await drive(cb(888, 'regplan:trial')) === 200, 'دوباره از 📝 تست زد');
+ok(env.DB.prepare('SELECT COUNT(*) AS n FROM accounts WHERE telegram_user_id = 888 AND plan = ?').bind('trial').first().n === 1, 'حساب تست دومی صادر نشد (سقف مشترک)');
+ok(env.DB.prepare('SELECT COUNT(*) AS n FROM licenses WHERE telegram_user_id = 888 AND plan = ?').bind('trial').first().n === 1, 'لایسنس تست دومی هم صادر نشد');
+ok(lastSentTo(888).includes('قبلاً تست'), 'پاسخ «قبلاً تست» آمد');
 
-section('T21 — ثبت‌نام خریدنی: رسید → تأیید → حساب کاربری (نه کد)');
+section('T21 — ثبت‌نام خریدنی: رسید → تأیید → پروفایل + لایسنس با هم');
 ok(await drive(cb(555, 'regplan:m1')) === 200, 'تپ regplan:m1 → 200');
 const pendAcc = env.DB.prepare('SELECT plan, kind FROM pending_receipts WHERE tg_user_id = 555').first();
 ok(!!pendAcc && pendAcc.plan === 'm1' && pendAcc.kind === 'account', 'pending با kind=account ثبت شد');
@@ -301,17 +306,24 @@ const okaBtn = sentTo(111).map((c) => JSON.stringify(c.body.reply_markup || {}))
 ok(!!okaBtn, 'دکمهٔ «تأیید و ساخت حساب» با oka: آمد');
 ok(sentTo(111).some((c) => (c.body.text || '').includes('رسید ثبت‌نام')), 'کپشن «رسید ثبت‌نام» برای ادمین');
 const nAccBefore = env.DB.prepare('SELECT COUNT(*) AS n FROM accounts').first().n;
+const nLicBefore555 = env.DB.prepare('SELECT COUNT(*) AS n FROM licenses').first().n;
 ok(await drive(cb(222, okaBtn)) === 200, 'تپ ✅ ساخت حساب توسط ادمین 222 → 200');
-const accNote = env.DB.prepare('SELECT username, plan, telegram_user_id, note FROM accounts WHERE note = ?').bind('receipt:' + okaBtn.split(':')[3] + ':555').first();
-ok(!!accNote && accNote.plan === 'm1', 'حساب با note رسید صادر شد (ضد-دوباره‌کاری)');
+const tsNote = 'receipt:' + okaBtn.split(':')[3] + ':555';
+const licNote = env.DB.prepare('SELECT code, plan, telegram_user_id FROM licenses WHERE note = ?').bind(tsNote).first();
+ok(!!licNote && licNote.plan === 'm1', 'لایسنس با note رسید صادر شد (ضد-دوباره‌کاری)');
+ok(licNote && licNote.telegram_user_id === 555, 'لایسنس به خریدار تلگرامی بسته شد');
+const accNew = env.DB.prepare('SELECT username, plan, telegram_user_id FROM accounts WHERE telegram_user_id = 555').first();
+ok(!!accNew && accNew.plan === 'm1', 'پروفایل خریدار ساخته شد');
 ok(env.DB.prepare('SELECT COUNT(*) AS n FROM accounts').first().n === nAccBefore + 1, 'دقیقاً یک حساب اضافه شد');
-ok(accNote.telegram_user_id === 555, 'حساب به خریدار تلگرامی بسته شد');
-const credToBuyer = sentTo(555).map((c) => c.body.text || '').find((t) => t.includes('حساب کاربری تو ساخته شد'));
-ok(!!credToBuyer && credToBuyer.includes(accNote.username), 'نام کاربری و رمز برای خریدار ارسال شد');
+ok(env.DB.prepare('SELECT COUNT(*) AS n FROM licenses').first().n === nLicBefore555 + 1, 'دقیقاً یک لایسنس اضافه شد');
+const credToBuyer = sentTo(555).map((c) => c.body.text || '').find((t) => t.includes('پرداخت شما تأیید شد'));
+ok(!!credToBuyer && credToBuyer.includes(accNew.username), 'نام کاربری پروفایل برای خریدار آمد');
+ok(!!credToBuyer && credToBuyer.includes('رمز عبور'), 'رمز برای خریدار آمد');
+ok(!!credToBuyer && credToBuyer.includes(licNote.code), 'لایسنس هم در همان پیام آمد');
 ok(!env.DB.prepare('SELECT tg_user_id FROM pending_receipts WHERE tg_user_id=555').first(), 'pending پس از تأیید پاک شد');
 ok(await drive(cb(111, okaBtn)) === 200, 'تپ ✅ تکراری → 200');
 ok(tg.filter((c) => c.method === 'editMessageText').some((c) => (c.body.text || '').includes('قبلاً تأیید شده')), 'تأیید تکراری همان پاسخ امن را داد');
-ok(env.DB.prepare('SELECT COUNT(*) AS n FROM accounts WHERE note = ?').bind(accNote.note).first().n === 1, 'هنوز فقط یک حساب با آن رسید');
+ok(env.DB.prepare('SELECT COUNT(*) AS n FROM licenses WHERE note = ?').bind(tsNote).first().n === 1, 'هنوز فقط یک لایسنس با آن رسید');
 
 section('T22 — پنل «📝 ثبت‌نامی‌ها»: لینک تلگرام، حساب، زمان‌ها');
 ok(await drive(cb(111, 'adm:regs:1')) === 200, 'adm:regs:1 → 200');
@@ -352,6 +364,67 @@ ok(lastSentTo(111).includes('CARD-INFO'), 'clear به مقدار Secret برگش
 const settingsBefore = env.DB.prepare('SELECT COUNT(*) AS n FROM settings').first().n;
 ok(await drive(textMsg(999999, '/card hack-attempt')) === 200, '/card از غیرادمین → 200 (نادیده گرفته شد)');
 ok(env.DB.prepare('SELECT COUNT(*) AS n FROM settings').first().n === settingsBefore, 'غیرادمین چیزی تغییر نداد');
+
+section('T25 — سفر چندکاربره: هر تأییدی، پروفایل + لایسنس با هم می‌دهد');
+// U2: خریدار تازه از مسیر 🛍
+ok(await drive(cb(7001, 'plan:m1')) === 200, 'U2 پلن m1 را زد');
+ok(await drive(photoMsg(7001)) === 200, 'U2 رسید فرستاد');
+const btnU2a = tg.filter((c) => c.method === 'sendMessage' && String(c.body.chat_id) === '111')
+  .map((c) => JSON.stringify(c.body.reply_markup || {})).reverse().find((s) => s.includes('ok:7001:m1:'));
+ok(!!btnU2a, 'دکمهٔ تأیید برای ادمین آمد');
+ok(await drive(cb(111, `ok:7001:m1:${btnU2a.match(/ok:7001:m1:(\d+)/)[1]}`)) === 200, 'ادمین ✅ زد');
+const u2msg = lastSentTo(7001);
+ok(u2msg.includes('پروفایل تو'), 'U2: نام کاربری پروفایل آمد');
+ok(u2msg.includes('رمز عبور'), 'U2: رمز آمد');
+ok(/BEE-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}/.test(u2msg), 'U2: لایسنس کد آمد');
+ok(env.DB.prepare('SELECT COUNT(*) AS n FROM accounts WHERE telegram_user_id = 7001').first().n === 1, 'U2: دقیقاً یک پروفایل');
+ok(env.DB.prepare('SELECT COUNT(*) AS n FROM licenses WHERE telegram_user_id = 7001').first().n === 1, 'U2: دقیقاً یک لایسنس');
+// U2 خرید دوم — همان پروفایل، لایسنس تازه، رمز تکرار نمی‌شود
+ok(await drive(cb(7001, 'plan:m3')) === 200, 'U2 دوباره m3 زد');
+ok(await drive(photoMsg(7001)) === 200, 'U2 رسید دوم را فرستاد');
+const btnU2b = tg.filter((c) => c.method === 'sendMessage' && String(c.body.chat_id) === '111')
+  .map((c) => JSON.stringify(c.body.reply_markup || {})).reverse().find((s) => s.includes('ok:7001:m3:'));
+ok(await drive(cb(111, `ok:7001:m3:${btnU2b.match(/ok:7001:m3:(\d+)/)[1]}`)) === 200, 'ادمین ✅ دوم را زد');
+const u2msg2 = lastSentTo(7001);
+ok(/BEE-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}/.test(u2msg2), 'U2: لایسنس دوم آمد');
+ok(u2msg2.includes('رمز قبلی'), 'U2: به‌جای رمز، «رمز قبلی» یادآوری شد');
+ok(!u2msg2.includes('رمز عبور:'), 'U2: رمز دوباره نشان داده نشد (hash نگه‌داری می‌شود)');
+ok(env.DB.prepare('SELECT COUNT(*) AS n FROM accounts WHERE telegram_user_id = 7001').first().n === 1, 'U2: پروفایل تکراری ساخته نشد');
+ok(env.DB.prepare('SELECT COUNT(*) AS n FROM licenses WHERE telegram_user_id = 7001').first().n === 2, 'U2: دو لایسنس مستقل');
+// U3: اول ثبت‌نام (تست) بعد خرید — ثبت‌نام بن‌بست نیست
+ok(await drive(cb(7002, 'regplan:trial')) === 200, 'U3 اول ثبت‌نام تست زد');
+ok(await drive(cb(7002, 'plan:m1')) === 200, 'U3 بلافاصله خرید زد');
+ok(await drive(photoMsg(7002)) === 200, 'U3 رسید فرستاد');
+const btnU3 = tg.filter((c) => c.method === 'sendMessage' && String(c.body.chat_id) === '111')
+  .map((c) => JSON.stringify(c.body.reply_markup || {})).reverse().find((s) => s.includes('ok:7002:m1:'));
+ok(await drive(cb(111, `ok:7002:m1:${btnU3.match(/ok:7002:m1:(\d+)/)[1]}`)) === 200, 'ادمین برای U3 ✅ زد');
+const u3msg = lastSentTo(7002);
+ok(u3msg.includes('رمز قبلی'), 'U3: پروفایل قبلی‌اش دوباره استفاده شد (ثبت‌نام بن‌بست نیست)');
+ok(/BEE-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}/.test(u3msg), 'U3: لایسنس خرید آمد');
+ok(env.DB.prepare('SELECT COUNT(*) AS n FROM accounts WHERE telegram_user_id = 7002').first().n === 1, 'U3: یک پروفایل برای هر دو (تست + خرید)');
+// پروفایل: دکمهٔ کانال و پشتیبانی
+ok(await drive(cb(7002, 'mysub')) === 200, 'U3 پروفایل را باز کرد');
+const profKb = JSON.stringify(tg.filter((c) => c.method === 'sendMessage' && String(c.body.chat_id) === '7002').at(-1)?.body?.reply_markup || {});
+ok(profKb.includes('BEESELL_GP'), 'پروفایل: دکمهٔ کانال');
+ok(profKb.includes('Bee_hive_VPN'), 'پروفایل: دکمهٔ پشتیبانی');
+// انقضا: پروفایل زنده می‌ماند، منقضی نشان داده می‌شود، دکمه‌ها هست
+const licU3 = env.DB.prepare('SELECT code FROM licenses WHERE telegram_user_id = 7002 AND plan = ?').bind('m1').first();
+env.DB.prepare('UPDATE licenses SET expires_at = ? WHERE code = ?').bind(Math.floor(Date.now() / 1000) - 100, licU3.code).run();
+ok(await drive(cb(7002, 'mysub')) === 200, 'پروفایل بعد از انقضا → 200');
+const profExp = lastSentTo(7002);
+ok(profExp.includes('منقضی'), 'انقضا در پروفایل نشان داده شد');
+ok(profExp.includes('BEE-'), 'لایسنس منقضی هم در پروفایل دیده می‌شود');
+ok(JSON.stringify(tg.filter((c) => c.method === 'sendMessage' && String(c.body.chat_id) === '7002').at(-1)?.body?.reply_markup || {}).includes('BEESELL_GP'), 'بعد از انقضا هم کانال/خرید در پروفایل هست');
+// دو ادمین روی همان رسید ثبت‌نام — فقط یک بسته
+ok(await drive(cb(7003, 'regplan:m3')) === 200, 'U3b پلن m3 برای ثبت‌نام زد');
+ok(await drive(photoMsg(7003)) === 200, 'U3b رسید فرستاد');
+const btnU3bA = tg.filter((c) => c.method === 'sendMessage' && String(c.body.chat_id) === '111')
+  .map((c) => JSON.stringify(c.body.reply_markup || {})).reverse().find((s) => s.includes('oka:7003:m3:'));
+ok(!!btnU3bA, 'دکمهٔ oka (ثبت‌نام) آمد');
+ok(await drive(cb(111, `oka:7003:m3:${btnU3bA.match(/oka:7003:m3:(\d+)/)[1]}`)) === 200, 'ادمین ۱ ✅ زد');
+ok(await drive(cb(222, `oka:7003:m3:${btnU3bA.match(/oka:7003:m3:(\d+)/)[1]}`)) === 200, 'ادمین ۲ هم ✅ زد (مسابقه)');
+ok(env.DB.prepare('SELECT COUNT(*) AS n FROM licenses WHERE telegram_user_id = 7003').first().n === 1, 'با دو ✅ هم‌زمان، فقط یک لایسنس');
+ok(env.DB.prepare('SELECT COUNT(*) AS n FROM accounts WHERE telegram_user_id = 7003').first().n === 1, 'با دو ✅ هم‌زمان، فقط یک پروفایل');
 
 console.log(`\n═══ نتیجه: ${pass} پاس ✅ — ${fail} شکست ❌ ═══`);
 process.exitCode = fail ? 1 : 0;
