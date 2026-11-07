@@ -1,6 +1,7 @@
 package com.beevpn.win
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.foundation.Image
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -48,6 +49,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.Shadow
@@ -55,7 +57,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
@@ -285,35 +289,26 @@ private fun AppRoot() {
     }
 }
 
-/// The drawn hive logo: a hexagon cell stroked in molten gold with the bee
-/// hovering inside — no raster asset, pure canvas.
+/// The official BEE-VPN logo — the bee-face hexagon inside its molten ring,
+/// loaded once from the jar's resources (beevpn-logo.png — the same art the
+/// MSI/shortcut icon uses). Replaces the old drawn placeholder: buyers see
+/// the real brand at first launch, on the gate, in the rail and in About.
+private val beeLogoBitmap: ImageBitmap by lazy {
+    // skia lives on the same classloader as the app resources — the safe
+    // way to reach beevpn-logo.png inside the packaged jar.
+    val stream = requireNotNull(
+        org.jetbrains.skia.Image::class.java.classLoader.getResourceAsStream("beevpn-logo.png"),
+    ) { "beevpn-logo.png missing from the app resources" }
+    stream.use { org.jetbrains.skia.Image.makeFromEncoded(it.readBytes()).toComposeImageBitmap() }
+}
+
 @Composable
-fun HiveLogo() {
-    Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
-        Canvas(Modifier.size(44.dp)) {
-            val r = 19.dp.toPx()
-            val path = androidx.compose.ui.graphics.Path()
-            for (i in 0..6) {
-                val ang = Math.PI / 3.0 * i + Math.PI / 6.0
-                val px = center.x + (r * kotlin.math.cos(ang)).toFloat()
-                val py = center.y + (r * kotlin.math.sin(ang)).toFloat()
-                if (i == 0) path.moveTo(px, py) else path.lineTo(px, py)
-            }
-            path.close()
-            drawPath(
-                path,
-                Brush.verticalGradient(listOf(Honey.goldTop, Honey.goldBot)),
-                style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round),
-            )
-            drawPath(
-                path,
-                Brush.verticalGradient(
-                    listOf(Honey.primary.copy(alpha = 0.10f), Honey.primary.copy(alpha = 0.02f)),
-                ),
-            )
-        }
-        Text("🐝", fontSize = 18.sp)
-    }
+fun HiveLogo(size: Dp = 44.dp) {
+    Image(
+        bitmap = beeLogoBitmap,
+        contentDescription = "BEE-VPN",
+        modifier = Modifier.size(size),
+    )
 }
 
 /// The always-visible connection lamp — a glass pill that mirrors the tunnel

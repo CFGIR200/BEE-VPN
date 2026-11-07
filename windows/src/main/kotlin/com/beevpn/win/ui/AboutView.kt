@@ -30,7 +30,7 @@ fun AboutView() {
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 36.dp, vertical = 14.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            com.beevpn.win.HiveLogo()
+            com.beevpn.win.HiveLogo(84.dp)
             Text(
                 "BEE-VPN for Windows",
                 style = T.h1.copy(

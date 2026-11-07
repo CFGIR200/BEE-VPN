@@ -115,9 +115,16 @@ fun GateView() {
                         last = t.message             // the server's verdict — do not retry
                         return@withContext t.message
                     } catch (t: Throwable) {
-                        // Transport-level trouble (DNS, reset, offline…) — retry once.
-                        last = "ارتباط با سرور لایسنس برقرار نشد — اتصال اینترنت را بررسی کن" +
-                            (t.message?.let { " ($it)" } ?: "")
+                        last = when (t) {
+                            // transport-level (DNS, reset, offline…) — retry once
+                            is java.io.IOException ->
+                                "ارتباط با سرور لایسنس برقرار نشد — اتصال اینترنت را بررسی کن" +
+                                    (t.message?.let { " ($it)" } ?: "")
+                            // a broken/trimmed install (JVM Error, missing
+                            // modules…) — reinstall guidance, not «اینترنت را
+                            // بررسی کن»
+                            else -> LicenseManager.faTechError(t)
+                        }
                     }
                     if (attempt == 0) {
                         phase = "اتصال اول موفق نبود — یک تلاش دیگر…"
@@ -138,8 +145,8 @@ fun GateView() {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            // hero — the hive logo with its molten hexagon
-            com.beevpn.win.HiveLogo()
+            // hero — the official logo: the bee inside its molten ring
+            com.beevpn.win.HiveLogo(96.dp)
             Spacer(Modifier.height(8.dp))
             Text(
                 "BEE-VPN",

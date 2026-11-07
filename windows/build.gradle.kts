@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "com.beevpn"
-version = "1.5.0"
+version = "1.6.0"
 
 repositories {
     // JetBrains' read-through mirror of Maven Central — resilient when the
@@ -145,6 +145,26 @@ compose.desktop {
             packageVersion = project.version.toString()
             description = "BEE-VPN — the honey-fast Windows client"
             vendor = "BEE-VPN"
+            // ── The 1.5.0 lesson, wired shut ────────────────────────────
+            // With no explicit module list the packaged runtime was trimmed
+            // without java.net.http, so the first tap on «فعال‌سازی» died with
+            // «Could not initialize class: LicenseAPI» — the gate could never
+            // even start its HttpClient. Every module below is load-bearing:
+            //   java.net.http      → LicenseAPI (the gate itself)
+            //   java.desktop       → Compose / AWT clipboard & fonts
+            //   jdk.crypto.ec      → TLS to the Workers (ECDSA certs)
+            //   jdk.crypto.cryptoki→ PKCS11 provider
+            //   jdk.crypto.mscapi  → Windows certificate store for TLS
+            //   java.naming        → BouncyCastle provider plumbing
+            //   jdk.unsupported    → sun.misc.Unsafe (skiko / coroutines)
+            // CI now asserts the produced image really carries the classes
+            // (see windows.yml, the jimage guard step).
+            modules(
+                "java.base", "java.desktop", "java.logging", "java.management",
+                "java.naming", "java.net.http", "java.sql", "java.xml",
+                "jdk.crypto.ec", "jdk.crypto.cryptoki", "jdk.crypto.mscapi",
+                "jdk.unsupported", "jdk.zipfs",
+            )
             windows {
                 menu = true
                 shortcut = true

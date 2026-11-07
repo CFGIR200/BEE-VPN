@@ -104,6 +104,42 @@ jobs:
         run: |
           .\gradlew.bat packageMsi createDistributable --no-daemon
 
+      # ── Guard: the bundled runtime must actually carry java.net.http ────
+      # The 1.5.0 MSI shipped a trimmed runtime without it, and the license
+      # gate died with «Could not initialize class: LicenseAPI». This step
+      # makes that packaging gap a hard CI failure, not a buyer's bug report.
+      - name: Guard — runtime image must contain java.net.http + crypto
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $appDir = "windows/build/compose/binaries/main/app/BEE-VPN"
+          # 1) the jpackage runtime must carry the JDK modules the app needs
+          $modules = "$appDir/runtime/lib/modules"
+          if (-not (Test-Path $modules)) { throw "runtime image not found at $modules" }
+          $list = & jimage list "$modules"
+          $requiredRuntime = @(
+            "java/net/http/HttpClient.class",
+            "java/net/http/HttpResponse.class",
+            "sun/security/ec/SunEC.class"
+          )
+          $missing = @()
+          foreach ($c in $requiredRuntime) {
+            if (-not ($list | Select-String -SimpleMatch "/$c")) { $missing += $c }
+          }
+          # 2) the app jar must carry the gate classes and the brand logo
+          $jar = Get-ChildItem "$appDir/app" -Filter "*.jar" |
+            Where-Object { (& jar tf $_.FullName | Select-String -SimpleMatch "com/beevpn/win/MainKt.class") } |
+            Select-Object -First 1
+          if (-not $jar) { throw "main app jar not found under $appDir/app" }
+          $jarList = & jar tf $jar.FullName
+          foreach ($c in @("com/beevpn/win/license/LicenseAPI.class", "beevpn-logo.png")) {
+            if (-not ($jarList | Select-String -SimpleMatch $c)) { $missing += $c }
+          }
+          if ($missing.Count -gt 0) {
+            throw "packaging gap — missing: $($missing -join ', ') (the license gate would crash)"
+          }
+          Write-Host "packaging OK: java.net.http + SunEC in the runtime, LicenseAPI + logo in the app jar"
+
       # ── Portable zip: the self-contained app image + launcher ────────────
       - name: Assemble portable zip
         shell: pwsh

@@ -49,6 +49,23 @@ object LicenseManager {
     val isConfigured: Boolean
         get() = BeeConfig.LICENSE_URL.isNotEmpty() && BeeConfig.LICENSE_PUBKEY_B64.isNotEmpty()
 
+    /// Any unexpected Throwable → a buyer-readable Persian sentence, with the
+    /// raw text kept in parentheses for support. Class-loading failures
+    /// (NoClassDefFoundError / «Could not initialize class …» — e.g. the 1.5.0
+    /// MSI whose runtime lacked java.net.http) mean a broken install and must
+    /// ask for a REINSTALL, never for a network check.
+    fun faTechError(t: Throwable): String {
+        val raw = (t.message ?: t.javaClass.simpleName).take(140)
+        val brokenInstall = t is NoClassDefFoundError || t is ExceptionInInitializerError ||
+            raw.contains("Could not initialize class")
+        return when {
+            brokenInstall ->
+                "نصب برنامه ناقص است — آخرین فایل MSI را از صفحهٔ GitHub دانلود و دوباره نصب کن ($raw)"
+            else ->
+                "خطای غیرمنتظره — دوباره تلاش کن؛ اگر تکرار شد با پشتیبانی تماس بگیر ($raw)"
+        }
+    }
+
     /// 32 hex chars — the same shape Android generates (UUID without dashes)
     /// and the same shape the Worker's normalizeInstallId accepts.
     val installId: String by lazy {
@@ -100,7 +117,7 @@ object LicenseManager {
         } catch (e: LicenseAPI.LicenseError) {
             e.message
         } catch (t: Throwable) {
-            "خطای غیرمنتظره: ${t.message ?: t.javaClass.simpleName}"
+            faTechError(t)
         }
     }
 
@@ -110,7 +127,7 @@ object LicenseManager {
     } catch (e: LicenseAPI.LicenseError) {
         e.message
     } catch (t: Throwable) {
-        "خطای غیرمنتظره: ${t.message ?: t.javaClass.simpleName}"
+        faTechError(t)
     }
 
     /// Persists a successful /activate or /login response and flips state.
