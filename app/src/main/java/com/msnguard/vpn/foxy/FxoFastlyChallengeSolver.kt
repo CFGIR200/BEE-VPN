@@ -149,7 +149,15 @@ class FastlyChallengeSolver(private val cookieJar: SimpleCookieJar) {
         return challenges to last.groupValues[2]
     }
 
-    private fun fetchPat(client: OkHttpClient, prefixUrl: String, token: String): String {
+    private fun fetchPat(
+        client: OkHttpClient,
+        prefixUrl: String,
+        token: String,
+        // Upstream 2.0.2 left this function referencing `userAgent` without a
+        // parameter in scope (their commit skipped CI, so it never compiled).
+        // Same default the file's other entry points already use.
+        userAgent: String = FirefoxAccountHeaders.controlPlaneUserAgent,
+    ): String {
         val patUrl = "$prefixUrl/pat?token=${URLEncoder.encode(token, "UTF-8")}"
         val request = Request.Builder()
             .url(patUrl)
@@ -226,7 +234,12 @@ class FastlyChallengeSolver(private val cookieJar: SimpleCookieJar) {
         }
     }
 
-    private fun solveOnHost(base: String) {
+    private fun solveOnHost(
+        base: String,
+        // Same upstream fix: `userAgent` was referenced here with no parameter
+        // in scope; default it from the shared, remote-config-backed header.
+        userAgent: String = FirefoxAccountHeaders.controlPlaneUserAgent,
+    ) {
         val solverJar = SimpleCookieJar()
         val solver = FoxyControlPlaneHttp.client.newBuilder()
             .cookieJar(solverJar)
