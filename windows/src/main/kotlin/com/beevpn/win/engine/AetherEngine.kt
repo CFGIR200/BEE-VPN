@@ -19,8 +19,10 @@ import java.io.File
 /// This object is the desktop twin of `CoreConfig.env()` + the identity-file
 /// handling of `WarpIdentityFetcher.kt` / `IdentityProvisioner.kt`:
 ///   1. identity TOMLs live next to `AETHER_CONFIG`, whose sibling paths the
-///      core derives itself (`aether-masque.toml`, `aether-gool.toml`,
-///      `aether-masque-secondary.toml`, `<config>-lastconn`);
+///      core derives itself with derive_sibling_path (`aether-masque.toml`,
+///      `aether-secondary.toml` for gool's inner leg, `aether-masque-secondary.toml`
+///      for mim's, `<config>-lastconn`) — the 1.4.0 build checked the WRONG
+///      sibling name for gool (`aether-gool.toml`), a name the core never reads;
 ///   2. `AETHER_REGISTER` fills any missing identity in place — and an
 ///      identity file already present is KEPT, never replaced, so re-running
 ///      it before every connect is a no-op when the identity is warm;
@@ -80,27 +82,52 @@ object AetherEngine {
 
     fun masquePath(): File = File(AppPaths.baseDir, "aether-masque.toml")
 
+    /// The inner legs — the names derive_sibling_path produces in the core
+    /// (lib.rs: `derive_sibling_path(&wireguard, "secondary")` and the masque
+    /// sibling's own `-secondary`). IdentityProvisioner.kt on the phone
+    /// persists exactly these names.
+    fun secondaryPath(): File = File(AppPaths.baseDir, "aether-secondary.toml")
+
+    fun masqueSecondaryPath(): File = File(AppPaths.baseDir, "aether-masque-secondary.toml")
+
     /// Files that must be complete for `protocol` to be connectable. gool
-    /// carries wireguard + an inner wireguard (`aether-gool.toml`); mim
+    /// carries wireguard + an inner wireguard (`aether-secondary.toml`); mim
     /// carries masque + its inner (`aether-masque-secondary.toml`).
     fun identityFiles(protocol: Protocol): List<File> = when (protocol) {
         Protocol.WG -> listOf(configPath())
         Protocol.MASQUE -> listOf(masquePath())
-        Protocol.GOOL -> listOf(configPath(), File(AppPaths.baseDir, "aether-gool.toml"))
-        Protocol.MIM -> listOf(masquePath(), File(AppPaths.baseDir, "aether-masque-secondary.toml"))
+        Protocol.GOOL -> listOf(configPath(), secondaryPath())
+        Protocol.MIM -> listOf(masquePath(), masqueSecondaryPath())
     }
 
-    /// The completeness rule WarpIdentityFetcher.kt:774-779 enforces on the
-    /// phone: device_id + wg_private_key + wg_peer_public_key, plus the MASQUE
-    /// cert pair for masque-family files.
+    /// The completeness rule IdentityProvisioner.validIdentityFile enforces on
+    /// the phone: device_id + access_token + ipv4 non-blank, the WireGuard
+    /// keys real 32-byte base64, and for masque-family files a real cert pair
+    /// with a live issued-at. The 1.4.0 shape (bare key-presence) passed a
+    /// half-written file as ready and let a dead identity poison a connect.
     fun identityComplete(file: File): Boolean {
         if (!file.isFile) return false
         val text = try { file.readText() } catch (_: Exception) { return false }
-        val has = { key: String -> text.contains("$key =") }
-        val base = has("device_id") && has("wg_private_key") && has("wg_peer_public_key")
+        val value = { key: String ->
+            Regex("^\\s*$key\\s*=\\s*\"([^\"]*)\"", RegexOption.MULTILINE)
+                .find(text)?.groupValues?.get(1)
+        }
+        val b32 = { key: String ->
+            val raw = value(key)
+            if (raw == null) false
+            else runCatching { java.util.Base64.getDecoder().decode(raw).size == 32 }.getOrDefault(false)
+        }
+        val masqueFamily = file.name.contains("masque")
+        val base = !value("device_id").isNullOrBlank() &&
+            !value("access_token").isNullOrBlank() &&
+            !value("ipv4").isNullOrBlank() &&
+            b32("wg_private_key") && b32("wg_peer_public_key")
         if (!base) return false
-        if (file.name.contains("masque")) return has("cert_pem") && has("key_pem")
-        return true
+        if (!masqueFamily) return true
+        return (value("cert_pem") ?: "").contains("BEGIN CERTIFICATE") &&
+            (value("key_pem") ?: "").contains("BEGIN PRIVATE KEY") &&
+            (Regex("^\\s*cert_issued_at\\s*=\\s*(\\d+)", RegexOption.MULTILINE)
+                .find(text)?.groupValues?.get(1)?.toLongOrNull() ?: 0L) > 0L
     }
 
     fun identitiesReady(protocol: Protocol): Boolean =
@@ -217,14 +244,39 @@ object AetherEngine {
     }
 
     /// The minimal registration environment — WarpIdentityFetcher stage C:
-    /// config path + ECH + what to register, nothing else. `AETHER_UPSTREAM`
-    /// and every tunnel-carrying key stay unset (the fetcher clears them).
-    fun registerEnv(protocol: Protocol, apiEch: String? = EMBEDDED_API_ECH): Map<String, String> {
+    /// config path + ECH + what to register. `upstream` (a socks5:// URL the
+    /// SHARD listener serves) is the rescue rail the phone rides whenever the
+    /// carrier blocks the API: the core routes the account API through it
+    /// (Android's provisionIdentityThroughShard → CoreConfig AETHER_UPSTREAM).
+    fun registerEnv(
+        protocol: Protocol,
+        apiEch: String? = EMBEDDED_API_ECH,
+        upstream: String? = null,
+    ): Map<String, String> {
         val env = sortedMapOf<String, String>()
         env["AETHER_CONFIG"] = configPath().absolutePath
         env["AETHER_LOG_LEVEL"] = "info"
         env["AETHER_REGISTER"] = protocol.register
         if (apiEch != null) env["AETHER_API_ECH"] = apiEch
+        if (upstream != null) env["AETHER_UPSTREAM"] = upstream
+        return env
+    }
+
+    /// The Tor reverse-carrier environment — the tunnel through tor, the same
+    /// core facility the phone's Tor transport is shaped after. `reverse`
+    /// carries BOTH the registration and the tunnel through the tor circuit;
+    /// lyrebird (obfs4/snowflake/meek) rides along as the pluggable transport.
+    fun torEnv(protocol: Protocol, cores: File): Map<String, String> {
+        val env = connectEnv(protocol, ipv6Available = false).toMutableMap()
+        env["AETHER_TOR"] = "reverse"
+        val lyrebird = File(cores, "lyrebird.exe")
+        if (lyrebird.isFile) {
+            env["AETHER_TOR_PT"] = lyrebird.absolutePath
+            val ptDir = File(AppPaths.runDir, "pt-state").apply { mkdirs() }
+            env["AETHER_TOR_PT_DIR"] = ptDir.absolutePath
+        }
+        val torDir = File(AppPaths.runDir, "tor-state").apply { mkdirs() }
+        env["AETHER_TOR_DIR"] = torDir.absolutePath
         return env
     }
 
@@ -239,16 +291,17 @@ object AetherEngine {
         cores: File,
         budgetMs: Long = 180_000,
         onLine: ((String) -> Unit)? = null,
+        upstream: String? = null,
     ): Boolean {
         if (identitiesReady(protocol)) return true
         val exe = File(cores, "aether.exe")
         if (!exe.isFile) return false
         val proc = EngineProcess(
-            "aether-register",
+            if (upstream != null) "aether-register-shard" else "aether-register",
             exe,
             emptyList(),
             AppPaths.baseDir,
-            env = registerEnv(protocol),
+            env = registerEnv(protocol, upstream = upstream),
         )
         proc.onLine = onLine
         proc.start()

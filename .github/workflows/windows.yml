@@ -79,8 +79,17 @@ jobs:
           "APP_VER=$ver" >> $env:GITHUB_ENV
           Write-Host "app version: $ver"
 
+      # The config env rides the TEST step too: generateBeeConfig bakes the
+      # values into the generated sources, and a task run without them first
+      # would poison the build step's regeneration history.
       - name: Unit tests (the license & shard QA gate)
         working-directory: windows
+        env:
+          BEE_LICENSE_URL: ${{ secrets.BEE_LICENSE_URL }}
+          BEE_LICENSE_PUBKEY_B64: ${{ secrets.BEE_LICENSE_PUBKEY_B64 }}
+          BEE_TELEGRAM_URL: ${{ secrets.BEE_TELEGRAM_URL }}
+          BEE_SUPPORT_URL: ${{ secrets.BEE_SUPPORT_URL }}
+          BEE_IDENTITY_RELAY_HMAC: ${{ secrets.BEE_IDENTITY_RELAY_HMAC }}
         run: .\gradlew.bat test --no-daemon
 
       - name: Build (MSI + distributable app image)
@@ -91,6 +100,7 @@ jobs:
           BEE_LICENSE_PUBKEY_B64: ${{ secrets.BEE_LICENSE_PUBKEY_B64 }}
           BEE_TELEGRAM_URL: ${{ secrets.BEE_TELEGRAM_URL }}
           BEE_SUPPORT_URL: ${{ secrets.BEE_SUPPORT_URL }}
+          BEE_IDENTITY_RELAY_HMAC: ${{ secrets.BEE_IDENTITY_RELAY_HMAC }}
         run: |
           .\gradlew.bat packageMsi createDistributable --no-daemon
 

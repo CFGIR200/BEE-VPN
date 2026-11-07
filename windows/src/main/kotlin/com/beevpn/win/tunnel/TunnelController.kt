@@ -17,6 +17,9 @@ import com.beevpn.win.shard.ShardRace
 import com.beevpn.win.shard.ShardSubscription
 import com.beevpn.win.warp.WarpIdentity
 import com.beevpn.win.warp.WarpProvisioner
+import com.beevpn.win.warp.IdentityRelayClient
+import java.net.InetSocketAddress
+import java.net.Proxy
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -56,7 +59,7 @@ import java.util.concurrent.atomic.AtomicInteger
 /// e2e, then the 30 s watchdog with Android's 5/15/30/60/120 ladder.
 object TunnelController {
 
-    enum class Mode { AUTO, SHARD, WARP, MASQUE, GOOL, MIM, MANUAL }
+    enum class Mode { AUTO, SHARD, WARP, MASQUE, GOOL, MIM, TOR, MANUAL }
 
     enum class State { DISCONNECTED, PROVISIONING, STARTING, VERIFYING, CONNECTED, STOPPING, FAILED }
 
@@ -224,6 +227,7 @@ object TunnelController {
                 is Exit.Node -> bringUpShardNode(exit.profile, cores, baseline, ipv6)
                 is Exit.Anytls -> bringUpAnytls(exit.profile, cores, baseline, ipv6)
                 is Exit.Manual -> bringUpManualWarp(exit.identity, cores, baseline, ipv6)
+                Exit.Tor -> bringUpTor(cores, baseline, ipv6)
             }
 
             // Android's Auto-Scan escalation, one rung per connect: the phone
@@ -236,7 +240,7 @@ object TunnelController {
             when (exit) {
                 is Exit.Node, is Exit.Anytls -> { rungQueue.add(AetherEngine.Protocol.WG); rungQueue.add(AetherEngine.Protocol.MASQUE) }
                 is Exit.Aether -> if (exit.protocol == AetherEngine.Protocol.WG) rungQueue.add(AetherEngine.Protocol.MASQUE)
-                is Exit.Manual -> {}
+                is Exit.Manual, Exit.Tor -> {}
             }
             while (verdict.message != null && mode == Mode.AUTO && rungQueue.isNotEmpty()) {
                 val rung = rungQueue.removeFirst()
@@ -343,15 +347,27 @@ object TunnelController {
         return withContext(Dispatchers.IO) { verifyTunnelUp(baseline, warpExit = true) }
     }
 
-    /// The identity ladder, in Android's order: saved identity → direct API →
-    /// the engine's own ECH-backed registration (AETHER_REGISTER — the same
-    /// call the phone's WarpIdentityFetcher makes). Registration is
-    /// idempotent: a complete identity file is never touched, so warm
-    /// identities reconnect through the lastconn ring at full speed.
+    /// The identity ladder, in the phone's order (IdentityRelayClient +
+    /// IdentityProvisioner + provisionIdentityThroughShard, top to bottom):
     ///
-    /// Returns null when the identity is ready, else the Persian failure —
-    /// the message flows back as the connect's Verdict so a provisioning
-    /// failure can NEVER fall through to a fake «متصل است».
+    ///   1. saved identity — a complete file is never touched, so warm
+    ///      identities reconnect through the lastconn ring at full speed;
+    ///   2. the in-process ladder — relay Workers (when the build carries the
+    ///      HMAC secret), then the direct API across its host ladder. This is
+    ///      what rescues every fresh install on a carrier that poisons the
+    ///      account API — and what the 1.4.0 desktop did not have at all,
+    ///      which is the «هویت MASQUE ساخته نشد» report from the field;
+    ///   3. registration through SHARD — a listener-only xray on 1824 (the
+    ///      phone's ShardManager port) with the race winner as the exit, the
+    ///      engine's own registration riding it via AETHER_UPSTREAM, and an
+    ///      in-process SOCKS enrollment as the fallback of the fallback;
+    ///   4. the engine's own ECH-backed registration, direct (AETHER_REGISTER
+    ///      — the same call the phone's WarpIdentityFetcher makes).
+    ///
+    /// Registration is idempotent at every rung. Returns null when the
+    /// identity is ready, else the Persian failure — the message flows back
+    /// as the connect's Verdict so a provisioning failure can NEVER fall
+    /// through to a fake «متصل است».
     private suspend fun ensureAetherIdentity(protocol: AetherEngine.Protocol, cores: File): String? {
         if (AetherEngine.identitiesReady(protocol)) return null
 
@@ -362,27 +378,185 @@ object TunnelController {
                 AetherEngine.writeWgIdentity(saved)
                 if (AetherEngine.identitiesReady(protocol)) return null
             }
-            try {
-                val fresh = WarpProvisioner.register(null)
-                AetherEngine.writeWgIdentity(fresh)
-                if (AetherEngine.identitiesReady(protocol)) return null
-            } catch (e: Exception) {
-                TunnelVerifier.log("direct WARP registration failed: ${e.message} — trying the engine's ECH register")
-            }
         }
 
+        setState(State.PROVISIONING, "دریافت هویت از سرورهای پروژه…")
+        // The phone caches a blocked-API verdict for 5 minutes and skips
+        // the doomed direct route — the desktop does the same.
+        runCatching { IdentityRelayClient.provision(protocol, allowDirect = !WarpProvisioner.apiRecentlyBlocked()) }
+            .onSuccess { outcome ->
+                if (outcome.success) {
+                    TunnelVerifier.log("identity via relay/direct ladder: ${outcome.error}")
+                    if (AetherEngine.identitiesReady(protocol)) return null
+                } else {
+                    TunnelVerifier.log("relay/direct ladder failed: ${outcome.error}")
+                }
+            }
+            .onFailure { TunnelVerifier.log("relay/direct ladder threw: ${it.message}") }
+
+        setState(State.PROVISIONING, "ثبت‌نام از طریق تونل SHARD…")
+        if (registerThroughShard(protocol, cores)) return null
+
         setState(State.PROVISIONING, "ثبت‌نام از مسیر رمزگذاری‌شده (ECH)…")
-        val ok = AetherEngine.registerIfNeeded(protocol, cores) { line ->
+        if (AetherEngine.registerIfNeeded(protocol, cores, onLine = { line ->
             EngineProcess.logLine("[aether-register] $line")
-        }
-        if (ok) return null
+        })) return null
 
         return "هویت " + when (protocol) {
             AetherEngine.Protocol.WG -> "WARP"
             AetherEngine.Protocol.MASQUE -> "MASQUE"
             AetherEngine.Protocol.GOOL -> "گول (WARP روی WARP)"
             AetherEngine.Protocol.MIM -> "ماسک روی ماسک"
-        } + " ساخته نشد — اینترنت را بررسی کن یا به حالت SHARD برو؛ در تب پیشرفته هم می‌توانی کانفیگ دستی بگذاری"
+        } + " ساخته نشد — اتصال اینترنت را بررسی کن، یک بار به حالت SHARD وصل شو و دوباره تلاش کن؛ در تب پیشرفته هم می‌توانی کانفیگ دستی بگذاری"
+    }
+
+    /// The SHARD-backed registration — the desktop provisionIdentityThroughShard.
+    /// Raises a listener-only xray on 1824 (no TUN, nothing the user sees),
+    /// lets the engine register through it via AETHER_UPSTREAM, and falls back
+    /// to an in-process SOCKS enrollment when the engine's register cannot.
+    /// Every identity file the protocol needs (gool/mim carry two) is handled.
+    private suspend fun registerThroughShard(
+        protocol: AetherEngine.Protocol,
+        cores: File,
+    ): Boolean {
+        val pool = refreshPool()
+        if (pool.isEmpty()) {
+            TunnelVerifier.log("SHARD-backed registration skipped — the node pool is empty")
+            return false
+        }
+        setState(State.PROVISIONING, "ثبت‌نام — مسابقه نودها…")
+        var winner: ShardProfile? = null
+        withContext(Dispatchers.IO) {
+            winner = ShardRace.sweep(pool, cores) { progress ->
+                setState(State.PROVISIONING, "ثبت‌نام — $progress")
+            }
+        }
+        val node = winner ?: run {
+            TunnelVerifier.log("SHARD-backed registration skipped — no node answered")
+            return false
+        }
+
+        setState(State.PROVISIONING, "ثبت‌نام از مسیر تونل SHARD…")
+        val cfgFile = File(AppPaths.runDir, "provision.json")
+        cfgFile.writeText(EngineConfig.provisioningConfig(node).toString(2))
+        val xr = EngineProcess(
+            "xray-provision", File(cores, "xray.exe"),
+            listOf("run", "-c", cfgFile.absolutePath), cores,
+        )
+        xr.onLine = { line -> EngineProcess.logLine("[xray-provision] $line") }
+        xr.start()
+        try {
+            if (!EngineProcess.awaitPort(EngineConfig.PROVISION_SOCKS_PORT, 20_000) { xr.isAlive }) {
+                TunnelVerifier.log("provisioning listener did not open — SHARD registration abandoned")
+                return false
+            }
+            val upstream = "socks5://127.0.0.1:${EngineConfig.PROVISION_SOCKS_PORT}"
+
+            // 2a — the engine's own registration riding the tunnel: the exact
+            // mechanism the phone uses (AETHER_UPSTREAM → the SOCKS listener).
+            val viaEngine = AetherEngine.registerIfNeeded(
+                protocol, cores,
+                budgetMs = 240_000,
+                onLine = { line -> EngineProcess.logLine("[aether-register] $line") },
+                upstream = upstream,
+            )
+            if (viaEngine) {
+                TunnelVerifier.log("identity registered through SHARD (engine + AETHER_UPSTREAM)")
+                return true
+            }
+
+            // 2b — in-process enrollment over the same SOCKS listener: speaks
+            // the registration API itself (IdentityRelayClient), so an engine
+            // register that cannot still leaves a complete identity on disk.
+            setState(State.PROVISIONING, "ثبت‌نام مستقیم از مسیر SHARD…")
+            val outcome = runCatching {
+                IdentityRelayClient.provisionThroughSocks(
+                    protocol,
+                    Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", EngineConfig.PROVISION_SOCKS_PORT)),
+                )
+            }
+            outcome.onSuccess {
+                if (it.success) {
+                    TunnelVerifier.log("identity registered through SHARD (in-process SOCKS)")
+                    if (AetherEngine.identitiesReady(protocol)) return true
+                } else {
+                    TunnelVerifier.log("in-process SHARD enrollment failed: ${it.error}")
+                }
+            }.onFailure { TunnelVerifier.log("in-process SHARD enrollment threw: ${it.message}") }
+            return false
+        } finally {
+            xr.stop()
+        }
+    }
+    /// The Tor transport — the tunnel through tor (AETHER_TOR=reverse), the
+    /// same core facility the phone's Tor mode is the sibling of: the tor
+    /// circuit carries BOTH the registration and the wireguard tunnel, with
+    /// lyrebird (obfs4/snowflake/meek) as the pluggable transport. Bootstrap
+    /// is the slow part, so the listener budget is the MASQUE-family one.
+    private suspend fun bringUpTor(
+        cores: File,
+        baseline: String?,
+        ipv6: Boolean,
+    ): Verdict {
+        setState(State.PROVISIONING, "هویت WARP…")
+        val identityFailure = ensureAetherIdentity(AetherEngine.Protocol.WG, cores)
+        if (identityFailure != null) return Verdict(identityFailure)
+
+        setState(State.STARTING, "راه‌اندازی موتور اندروید (aether) روی تور…")
+        val exe = AetherEngine.exe(cores)
+            ?: return Verdict("aether.exe در بستهٔ برنامه نیست — بستهٔ رسمی را نصب کن")
+        val proc = EngineProcess(
+            "aether", exe, emptyList(), AppPaths.baseDir,
+            env = AetherEngine.torEnv(AetherEngine.Protocol.WG, cores),
+        )
+        proc.onLine = { line -> EngineProcess.logLine("[aether-tor] $line") }
+        proc.onExit = { code ->
+            if (state == State.CONNECTED) {
+                scheduleAutoReconnect("موتور aether ناگهان متوقف شد (کد $code)")
+            } else if (state == State.STARTING || state == State.VERIFYING) {
+                scope.launch {
+                    mutex.withLock { withContext(Dispatchers.IO) { killEnginesQuiet() } }
+                }
+            }
+        }
+        proc.start()
+        aether = proc
+        val socksBudgetMs = AetherEngine.socksReadyBudgetMs(AetherEngine.Protocol.MASQUE)
+        if (!EngineProcess.awaitPort(AetherEngine.SOCKS_PORT, socksBudgetMs) { proc.isAlive }) {
+            return Verdict("موتور aether روی پورت ${AetherEngine.SOCKS_PORT} بالا نیامد (بودجهٔ ${faNum((socksBudgetMs / 1000).toInt())} ثانیه، مثل اندروید) — گزارش پیشرفته را ببین")
+        }
+        TunnelVerifier.log("aether SOCKS up on ${AetherEngine.SOCKS_PORT} (tor-reverse/wg)")
+
+        setState(State.STARTING, "ساخت تونل سیستم…")
+        val bridge = EngineConfig.build(
+            useTun = true,
+            ipv6Available = ipv6,
+            exitOutbound = EngineConfig.aetherBridgeExit(),
+            fragmentOnDirect = false,
+            includeSocksIn = false,
+        )
+        val bridgeFile = File(AppPaths.runDir, "xray.json")
+        bridgeFile.writeText(bridge.toString(2))
+        val xr = EngineProcess(
+            "xray", File(cores, "xray.exe"),
+            listOf("run", "-c", bridgeFile.absolutePath), cores,
+        )
+        xr.onLine = { line -> EngineProcess.logLine("[xray] $line") }
+        xr.onExit = { code ->
+            if (state == State.CONNECTED) {
+                scheduleAutoReconnect("موتور VPN ناگهان متوقف شد (کد $code)")
+            } else if (state == State.STARTING || state == State.VERIFYING) {
+                scope.launch {
+                    mutex.withLock { withContext(Dispatchers.IO) { killEnginesQuiet() } }
+                }
+            }
+        }
+        xr.start()
+        xray = xr
+
+        setState(State.VERIFYING, "بررسی تونل سیستم…")
+        exitSummary = "تور (WARP روی تور) — موتور اندروید"
+        return withContext(Dispatchers.IO) { verifyTunnelUp(baseline, warpExit = true) }
     }
 
     // ------------------------------------------------------------- shard
@@ -519,6 +693,7 @@ object TunnelController {
         data class Node(val profile: ShardProfile) : Exit()
         data class Anytls(val profile: ShardProfile) : Exit()
         data class Manual(val identity: WarpIdentity) : Exit()
+        data object Tor : Exit()
     }
 
     @Volatile private var exitSummary: String = ""
@@ -536,6 +711,8 @@ object TunnelController {
             Mode.MASQUE -> Exit.Aether(AetherEngine.Protocol.MASQUE)
             Mode.GOOL -> Exit.Aether(AetherEngine.Protocol.GOOL)
             Mode.MIM -> Exit.Aether(AetherEngine.Protocol.MIM)
+            Mode.TOR -> Exit.Tor
+            Mode.TOR -> Exit.Tor
             Mode.AUTO -> {
                 if (poolEmpty) return Exit.Aether(AetherEngine.Protocol.WG)
                 val winner = runShardRace()
@@ -752,6 +929,14 @@ object TunnelController {
                     AetherEngine.identityFiles(AetherEngine.Protocol.MASQUE).forEach { it.delete() }
                     AetherEngine.identityFiles(AetherEngine.Protocol.GOOL).forEach { it.delete() }
                     AetherEngine.identityFiles(AetherEngine.Protocol.MIM).forEach { it.delete() }
+                    // The inner-leg files the engine derives — same set, named
+                    // exactly as derive_sibling_path names them in the core.
+                    AetherEngine.secondaryPath().delete()
+                    AetherEngine.masqueSecondaryPath().delete()
+                    // The inner-leg files the engine derives — same set, named
+                    // exactly as derive_sibling_path names them in the core.
+                    AetherEngine.secondaryPath().delete()
+                    AetherEngine.masqueSecondaryPath().delete()
                     File(AppPaths.baseDir, "aether.toml-lastconn").delete()
                 }
             }

@@ -1,6 +1,7 @@
 package com.beevpn.win
 
 import com.beevpn.win.engine.AetherEngine
+import com.beevpn.win.engine.EngineConfig
 import com.beevpn.win.engine.EngineProcess
 import com.beevpn.win.warp.WarpIdentity
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -14,9 +15,16 @@ import java.io.File
 /// drifting value here is a silent behavioral fork from Android.
 class AetherEngineTest {
 
+    // Real 32-byte base64 keys — the completeness rule decodes and checks
+    // sizes, exactly like IdentityProvisioner.validIdentityFile on the phone.
+    private val priv32 = java.util.Base64.getEncoder()
+        .encodeToString(ByteArray(32) { it.toByte() })
+    private val peer32 = java.util.Base64.getEncoder()
+        .encodeToString(ByteArray(32) { (it + 1).toByte() })
+
     private fun identity(clientId: String = "AAA") = WarpIdentity(
         deviceId = "dev-1", apiToken = "tok-1",
-        privateKey = "priv", peerPublicKey = "peer",
+        privateKey = priv32, peerPublicKey = peer32,
         addressV4 = "172.16.0.2/32", addressV6 = "2606:4700:110:8b57::/128",
         endpoint = "162.159.192.1:2408", clientIdB64 = clientId,
     )
@@ -119,6 +127,44 @@ class AetherEngineTest {
         assertEquals(4, env.size)
     }
 
+    @Test
+    fun `register env carries the SHARD upstream when the carrier blocked the API`() {
+        // The rescue rail: AETHER_UPSTREAM → the provisioning SOCKS listener,
+        // the exact mechanism provisionIdentityThroughShard opens on the phone.
+        val env = AetherEngine.registerEnv(
+            AetherEngine.Protocol.GOOL,
+            upstream = "socks5://127.0.0.1:${EngineConfig.PROVISION_SOCKS_PORT}",
+        )
+        assertEquals("gool", env["AETHER_REGISTER"])
+        assertEquals("socks5://127.0.0.1:1824", env["AETHER_UPSTREAM"])
+    }
+
+    @Test
+    fun `identity file names match derive_sibling_path in the core`() {
+        // gool's inner leg is aether-secondary.toml — lib.rs derives
+        // derive_sibling_path(&wireguard, "secondary"); the 1.4.0 name
+        // aether-gool.toml is a file the core never reads.
+        assertEquals("aether-secondary.toml", AetherEngine.secondaryPath().name)
+        assertEquals("aether-masque-secondary.toml", AetherEngine.masqueSecondaryPath().name)
+        assertEquals(
+            listOf(AetherEngine.configPath(), AetherEngine.secondaryPath()),
+            AetherEngine.identityFiles(AetherEngine.Protocol.GOOL),
+        )
+    }
+
+    @Test
+    fun `tor reverse env carries the tunnel through tor with lyrebird`() {
+        val cores = java.io.File(System.getProperty("java.io.tmpdir"))
+        val env = AetherEngine.torEnv(AetherEngine.Protocol.WG, cores)
+        assertEquals("reverse", env["AETHER_TOR"])
+        assertEquals("wg", env["AETHER_PROTOCOL"])
+        // PT + state dirs only when the transport binary ships (it does in the
+        // official package — CoreExtractor lists lyrebird.exe).
+        if (java.io.File(cores, "lyrebird.exe").isFile) {
+            assertEquals(java.io.File(cores, "lyrebird.exe").absolutePath, env["AETHER_TOR_PT"])
+        }
+    }
+
     // ------------------------------------------------------ identity TOML
 
     @Test
@@ -130,8 +176,8 @@ class AetherEngineTest {
             "access_token = \"tok-1\"",
             "ipv4 = \"172.16.0.2/32\"",
             "ipv6 = \"2606:4700:110:8b57::/128\"",
-            "wg_private_key = \"priv\"",
-            "wg_peer_public_key = \"peer\"",
+            "wg_private_key = \"" + priv32 + "\"",
+            "wg_peer_public_key = \"" + peer32 + "\"",
             // The reserved bytes — the field the whole 1.2.0 investigation
             // was about. Cloudflare drops handshakes without them.
             "client_id = \"AAA\"",
@@ -141,12 +187,42 @@ class AetherEngineTest {
     }
 
     @Test
-    fun `masque completeness demands the cert pair`() {
+    fun `masque completeness demands the cert pair like validIdentityFile`() {
         val f = File(AetherEngine.masquePath().absolutePath + ".test")
         try {
-            f.writeText("device_id = \"d\"\nwg_private_key = \"p\"\nwg_peer_public_key = \"k\"\n")
+            // Bare wg keys — the phone refuses this file (access_token, ipv4
+            // and the cert pair are all missing).
+            f.writeText("device_id = \"d\"\nwg_private_key = \"$priv32\"\nwg_peer_public_key = \"$peer32\"\n")
             assertFalse(AetherEngine.identityComplete(f))
-            f.writeText(f.readText() + "cert_pem = \"-----BEGIN CERTIFICATE-----\"\nkey_pem = \"-----BEGIN PRIVATE KEY-----\"\n")
+            // A cert pair without a live issued-at is still incomplete.
+            f.writeText(
+                f.readText() + "access_token = \"t\"\nipv4 = \"172.16.0.2\"\n" +
+                    "cert_pem = \"-----BEGIN CERTIFICATE-----\\nMIIB" +
+                    "\\n-----END CERTIFICATE-----\"\n" +
+                    "key_pem = \"-----BEGIN PRIVATE KEY-----\\nMHc" +
+                    "\\n-----END PRIVATE KEY-----\"\n" +
+                    "cert_issued_at = 0\n",
+            )
+            assertFalse(AetherEngine.identityComplete(f))
+            // Full set, live issued-at -> the only shape a connect may trust.
+            f.writeText(f.readText().replace("cert_issued_at = 0", "cert_issued_at = 1700000000"))
+            assertTrue(AetherEngine.identityComplete(f))
+        } finally {
+            f.delete()
+        }
+    }
+
+    @Test
+    fun `completeness refuses a half written wg identity`() {
+        val f = File(AetherEngine.configPath().absolutePath + ".test")
+        try {
+            // The 1.4.0 shape: keys present but no token — a file like this
+            // used to pass as ready and poison the connect.
+            f.writeText("device_id = \"d\"\nwg_private_key = \"$priv32\"\nwg_peer_public_key = \"$peer32\"\n")
+            assertFalse(AetherEngine.identityComplete(f))
+            f.writeText(f.readText() + "access_token = \"t\"\n")
+            assertFalse(AetherEngine.identityComplete(f))
+            f.writeText(f.readText() + "ipv4 = \"172.16.0.2\"\n")
             assertTrue(AetherEngine.identityComplete(f))
         } finally {
             f.delete()

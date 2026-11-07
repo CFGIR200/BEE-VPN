@@ -268,7 +268,10 @@ object WarpProvisioner {
     /// ready for the standard base64 wg-quick representation.
     private fun newX25519KeyPair(): Pair<ByteArray, ByteArray> {
         val kpg = KeyPairGenerator.getInstance("X25519")
-        kpg.initialize(256, SecureRandom())
+        // X25519 is a NAMED curve: initialize(int) is a key SIZE and 256 is
+        // unsupported — every registration died here with
+        // InvalidParameterException before a single byte hit the wire.
+        kpg.initialize(java.security.spec.NamedParameterSpec.X25519, SecureRandom())
         val kp = kpg.generateKeyPair()
         val priv = kp.private.encoded
         val pub = kp.public.encoded

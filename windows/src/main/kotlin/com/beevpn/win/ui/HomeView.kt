@@ -141,12 +141,22 @@ fun HomeView(onOpenProfile: () -> Unit = {}) {
                 if (state == TunnelController.State.CONNECTED) TunnelController.disconnect() else TunnelController.connect()
             }
 
-            if (TunnelController.mode == TunnelController.Mode.AUTO) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "خودکار: مثل اندروید — مسابقهٔ واقعی نودهای SHARD، و اگر زنده نبودند WARP (موتور اندروید)",
-                    style = T.muted,
-                )
+            when (TunnelController.mode) {
+                TunnelController.Mode.AUTO -> {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "خودکار: مثل اندروید — مسابقهٔ واقعی نودهای SHARD، و اگر زنده نبودند WARP (موتور اندروید)",
+                        style = T.muted,
+                    )
+                }
+                TunnelController.Mode.TOR -> {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "تور: تونل WARP روی مدار تور (با lyrebird) — راه‌اندازی آهسته است، تا یک دقیقه صبر کن؛ گزینهٔ نجات روی سخت‌ترین شبکه‌ها",
+                        style = T.muted,
+                    )
+                }
+                else -> {}
             }
 
             Spacer(Modifier.height(10.dp))
@@ -156,10 +166,10 @@ fun HomeView(onOpenProfile: () -> Unit = {}) {
     }
 }
 
-/// The transport selector — the phone's protocol list, desktop-shaped: seven
-/// modes in a two-row glass grid (4 + 3), the chosen one carried by the same
-/// molten gold pill. AUTO/SHARD/WARP/MASQUE on the first row, GOOL/MiM/manual
-/// beneath — the exact protocol family the Android app exposes.
+/// The transport selector — the phone's protocol list, desktop-shaped: eight
+/// modes in a two-row glass grid (4 + 4), the chosen one carried by the same
+/// molten gold pill. AUTO/SHARD/WARP/MASQUE on the first row, GOOL/MiM/Tor/
+/// manual beneath — the exact protocol family the Android app exposes.
 @Composable
 private fun ModeRow() {
     var selected by remember(TunnelController.mode) { mutableStateOf(TunnelController.mode) }
@@ -172,6 +182,7 @@ private fun ModeRow() {
     val row2 = listOf(
         TunnelController.Mode.GOOL to "🔗 گول",
         TunnelController.Mode.MIM to "🪆 ماسک²",
+        TunnelController.Mode.TOR to "🧅 تور",
         TunnelController.Mode.MANUAL to "✍ دستی",
     )
     val segW = 96.dp

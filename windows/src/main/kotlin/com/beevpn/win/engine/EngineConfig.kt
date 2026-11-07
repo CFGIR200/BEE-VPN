@@ -22,6 +22,12 @@ object EngineConfig {
     /// the system default route against this — keep in sync with it.
     const val TUN_INTERFACE_IP = "172.19.0.1"
 
+    /// The provisioning listener — the desktop ShardManager.SOCKS_PORT (1824):
+    /// a listener-only xray raised for identity registration when the carrier
+    /// blocks the account API. The aether core's AETHER_UPSTREAM rides it, the
+    /// same rail provisionIdentityThroughShard opens on the phone.
+    const val PROVISION_SOCKS_PORT = 1824
+
     private const val TUN_GATEWAY_V4 = "$TUN_INTERFACE_IP/30"
     private const val TUN_GATEWAY_V6 = "fdfe:dcba:9876::1/126"
 
@@ -248,4 +254,31 @@ object EngineConfig {
     /// The wg-quick text for the identity — shown in the Advanced tab and
     /// handed to the user for the manual mode, byte-for-byte the iOS shape.
     fun wgQuickOf(identity: WarpIdentity): String = WarpProvisioner.buildWGQuick(identity)
+
+    /// The listener-only config identity provisioning rides: one SOCKS inbound
+    /// on 1824 + the selected SHARD node as the exit — NO TUN, no system route,
+    /// nothing the user can see. The desktop twin of Android raising xray on
+    /// 1824 for registration while the user's screen still says «WireGuard».
+    fun provisioningConfig(profile: com.beevpn.win.shard.ShardProfile): JSONObject {
+        val root = JSONObject()
+        root.put("log", JSONObject().put("loglevel", "warning"))
+        root.put(
+            "inbounds",
+            org.json.JSONArray().put(
+                JSONObject()
+                    .put("tag", "socks-provision")
+                    .put("listen", "127.0.0.1")
+                    .put("port", PROVISION_SOCKS_PORT)
+                    .put("protocol", "socks")
+                    .put("settings", JSONObject().put("auth", "noauth").put("udp", false)),
+            ),
+        )
+        root.put(
+            "outbounds",
+            org.json.JSONArray()
+                .put(nodeExit(profile))
+                .put(JSONObject().put("tag", "block").put("protocol", "blackhole")),
+        )
+        return root
+    }
 }

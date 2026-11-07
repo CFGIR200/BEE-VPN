@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "com.beevpn"
-version = "1.4.0"
+version = "1.5.0"
 
 repositories {
     // JetBrains' read-through mirror of Maven Central — resilient when the
@@ -28,6 +28,10 @@ dependencies {
     implementation("org.json:json:20240303")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.9.0")
+    // The secp256r1 certificate the MASQUE identity needs — the same library
+    // the Android enrollment uses (IdentityRelayClient.enrollVia), pinned to
+    // the same version as app/build.gradle.kts.
+    implementation("org.bouncycastle:bcpkix-jdk18on:1.78.1")
     testImplementation(kotlin("test"))
 }
 
@@ -53,14 +57,27 @@ sourceSets.main {
 
 val generateBeeConfig by tasks.registering {
     val outDir = beeConfigDir
+    // The environment values are the task's INPUTS — the 1.4.0 release shipped
+    // an empty LICENSE_URL because the task declared outputs only: the test
+    // invocation (no env) generated the file first, and the build invocation
+    // (with BEE_LICENSE_URL set) saw the outputs present and skipped as
+    // UP-TO-DATE, baking the stale gate-less config into the MSI. Declaring
+    // the values as inputs forces a regeneration whenever any of them changes.
+    val licenseUrl = System.getenv("BEE_LICENSE_URL") ?: ""
+    val licenseKey = System.getenv("BEE_LICENSE_PUBKEY_B64") ?: ""
+    val telegram = System.getenv("BEE_TELEGRAM_URL") ?: "https://t.me/BEESELL_GP"
+    val support = System.getenv("BEE_SUPPORT_URL") ?: "https://t.me/Bee_hive_VPN"
+    val relayHmac = System.getenv("BEE_IDENTITY_RELAY_HMAC") ?: ""
+    inputs.property("licenseUrl", licenseUrl)
+    inputs.property("licenseKey", licenseKey)
+    inputs.property("telegram", telegram)
+    inputs.property("support", support)
+    inputs.property("relayHmac", relayHmac)
+    inputs.property("version", project.version.toString())
     outputs.dir(outDir)
     doLast {
         val dir = outDir.get().asFile.resolve("com/beevpn/win/config")
         dir.mkdirs()
-        val licenseUrl = System.getenv("BEE_LICENSE_URL") ?: ""
-        val licenseKey = System.getenv("BEE_LICENSE_PUBKEY_B64") ?: ""
-        val telegram = System.getenv("BEE_TELEGRAM_URL") ?: "https://t.me/BEESELL_GP"
-        val support = System.getenv("BEE_SUPPORT_URL") ?: "https://t.me/Bee_hive_VPN"
         fun esc(s: String) = s.replace("\\", "\\\\").replace("\"", "\\\"")
         dir.resolve("BeeConfig.kt").writeText(
             """
@@ -72,6 +89,12 @@ val generateBeeConfig by tasks.registering {
                 const val LICENSE_PUBKEY_B64 = "${esc(licenseKey)}"
                 const val TELEGRAM_URL = "${esc(telegram)}"
                 const val SUPPORT_URL = "${esc(support)}"
+                // The identity-relay Workers' HMAC — the abuse barrier the
+                // phone's IdentityRelayClient rides (BEE_IDENTITY_RELAY_HMAC).
+                const val IDENTITY_RELAY_HMAC_B64 = "${esc(relayHmac)}"
+                // The two relay endpoints, the same placeholders Android ships.
+                const val BEE_RELAY_A = "https://beevpn-identity-relay-a.beevpn-edge-one.workers.dev"
+                const val BEE_RELAY_B = "https://beevpn-identity-relay-b.beevpn-edge-two.workers.dev"
                 const val GITHUB_URL = "https://github.com/CFGIR200/BEE-VPN"
                 const val VERSION = "${project.version}"
             }
