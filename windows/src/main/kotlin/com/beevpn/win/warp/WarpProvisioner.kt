@@ -18,6 +18,14 @@ import java.util.Locale
 
 /// One registered WARP identity — the same shape IdentityProvisioner.kt
 /// persists on Android (aether.toml) and WarpProvisioner.swift on iOS.
+///
+/// `clientIdB64` is the registration API's `config.client_id` — three bytes
+/// Cloudflare requires INSIDE the WireGuard init/response packets (the
+/// "reserved" field). The Rust core injects them at pkt[1..4]
+/// (core/aether/src/wireguard.rs inject_client_id); the xray wireguard
+/// outbound needs the same bytes as peers[0].reserved. Without them the
+/// WARP endpoint silently drops every handshake — the tunnel comes up but
+/// not a single byte leaves: «تونل بالا آمد اما خروجی ترافیک پاس نمی‌دهد».
 data class WarpIdentity(
     val deviceId: String,
     val apiToken: String,
@@ -26,12 +34,26 @@ data class WarpIdentity(
     val addressV4: String,      // interface.addresses.v4 (e.g. 172.16.0.2)
     val addressV6: String,
     val endpoint: String,       // WireGuard UDP endpoint host:port
+    val clientIdB64: String = "", // config.client_id — the reserved bytes (base64)
 ) {
     fun asJson(): String = JSONObject()
         .put("deviceId", deviceId).put("apiToken", apiToken)
         .put("privateKey", privateKey).put("peerPublicKey", peerPublicKey)
         .put("addressV4", addressV4).put("addressV6", addressV6)
-        .put("endpoint", endpoint).toString()
+        .put("endpoint", endpoint)
+        .put("clientIdB64", clientIdB64)
+        .toString()
+
+    /// The three reserved bytes, or null when the identity has none (manual
+    /// wg-quick) or the blob is malformed. xray peers[].reserved wants a
+    /// numeric array — never emit a wrong length.
+    fun reservedBytes(): IntArray? {
+        if (clientIdB64.isBlank()) return null
+        return try {
+            val raw = Base64.getDecoder().decode(clientIdB64)
+            if (raw.size != 3) null else IntArray(3) { raw[it].toInt() and 0xFF }
+        } catch (_: Exception) { null }
+    }
 
     companion object {
         fun fromJson(s: String): WarpIdentity? = try {
@@ -41,6 +63,7 @@ data class WarpIdentity(
                 o.getString("privateKey"), o.getString("peerPublicKey"),
                 o.getString("addressV4"), o.optString("addressV6", ""),
                 o.optString("endpoint", "engage.cloudflareclient.com:2408"),
+                o.optString("clientIdB64", ""),
             )
         } catch (_: Exception) { null }
     }
@@ -127,6 +150,12 @@ object WarpProvisioner {
         if (deviceId.isEmpty() || apiToken.isEmpty() || v4.isEmpty() || peerKey.isEmpty()) {
             throw ProvisionError("پاسخ ثبت‌نام WARP ناقص بود — دوباره تلاش کن")
         }
+        // The reserved bytes: Cloudflare drops handshakes that do not carry
+        // them (the aether core decodes the same field — account.rs L779+).
+        val clientIdB64 = config?.optString("client_id", "") ?: ""
+        if (clientIdB64.isBlank()) {
+            WarpProvisionerLog.warn("registration returned no client_id — WARP egress will likely fail")
+        }
         val identity = WarpIdentity(
             deviceId = deviceId,
             apiToken = apiToken,
@@ -135,6 +164,7 @@ object WarpProvisioner {
             addressV4 = v4,
             addressV6 = addresses?.optString("v6", "") ?: "",
             endpoint = DEFAULT_ENDPOINT,
+            clientIdB64 = clientIdB64,
         )
         save(identity)
         identity
@@ -206,6 +236,19 @@ object WarpProvisioner {
         if (privateKey.isEmpty() || peerKey.isEmpty()) return null
         val v4 = address.split(",").map { it.trim() }.firstOrNull { it.contains(".") }?.substringBefore("/") ?: "172.16.0.2"
         val v6 = address.split(",").map { it.trim() }.firstOrNull { it.contains(":") }?.substringBefore("/") ?: ""
-        return WarpIdentity("manual", "", privateKey, peerKey, v4, v6, endpoint)
+        // wg-quick text carries no client_id — a manual WARP config without
+        // reserved bytes only works on non-Cloudflare WireGuard endpoints.
+        return WarpIdentity("manual", "", privateKey, peerKey, v4, v6, endpoint, "")
+    }
+}
+
+/// Tiny log shim so the register path can warn without pulling more of the
+/// engine stack into every caller.
+private object WarpProvisionerLog {
+    fun warn(msg: String) {
+        try {
+            java.io.File(com.beevpn.win.AppPaths.logsDir, "warp.log")
+                .appendText("[provisioner] $msg\n")
+        } catch (_: Exception) {}
     }
 }

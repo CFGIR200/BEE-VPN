@@ -37,6 +37,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
@@ -178,6 +179,18 @@ fun GateView() {
                     Spacer(Modifier.height(14.dp))
 
                     if (tab == 0) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                        ) {
+                            PasteChip(
+                                onPaste = { pasted ->
+                                    code = normalizeCode(pasted)
+                                    error = null
+                                },
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
                         BeeField(
                             value = code,
                             onValue = { code = it.uppercase().trim() },
@@ -185,6 +198,11 @@ fun GateView() {
                             enabled = !busy,
                             focusRequester = codeFocus,
                             onEnter = ::submit,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "کد را از پیام ربات کپی و با دکمهٔ بالا بچسبان — با Enter هم فعال می‌شود.",
+                            style = T.muted.copy(fontSize = 11.sp),
                         )
                     } else {
                         BeeField(
@@ -271,10 +289,101 @@ fun GateView() {
             }
 
             Spacer(Modifier.height(14.dp))
-            Text(
-                "شناسهٔ دستگاه: ${faDigits(LicenseManager.installId.take(12))}… (برای انتقال اشتراک با پشتیبانی تماس بگیر)",
-                style = T.muted,
+            CopyDeviceChip()
+        }
+    }
+}
+
+/// Cleans a pasted blob into the BEE- code shape: uppercase, trimmed, and —
+/// when the clipboard holds a whole invoice message — the code inside it.
+internal fun normalizeCode(raw: String): String {
+    val cleaned = raw.uppercase().replace("–", "-").trim()
+    val hit = Regex("BEE-[A-Z2-9]{4}[- ][A-Z2-9]{4}[- ][A-Z2-9]{4}").find(cleaned)
+    return (hit?.value ?: cleaned).replace(" ", "-").take(19)
+}
+
+/// 📋 چسباندن — reads the system clipboard into the code field. Compose
+/// Desktop has no clipboard API of its own; AWT's is the reliable one.
+@Composable
+private fun PasteChip(onPaste: (String) -> Unit) {
+    var flash by remember { mutableStateOf(false) }
+    LaunchedEffect(flash) {
+        if (flash) {
+            delay(1_500)
+            flash = false
+        }
+    }
+    Box(
+        Modifier
+            .clip(ChipShape)
+            .background(
+                if (flash) Honey.ok.copy(alpha = 0.15f) else Honey.track.copy(alpha = 0.85f),
             )
+            .border(
+                1.dp,
+                if (flash) Honey.ok.copy(alpha = 0.5f) else Honey.divider,
+                ChipShape,
+            )
+            .clickable {
+                try {
+                    val t = java.awt.Toolkit.getDefaultToolkit().systemClipboard
+                        .getData(java.awt.datatransfer.DataFlavor.stringFlavor) as? String
+                    if (!t.isNullOrBlank()) {
+                        onPaste(t)
+                        flash = true
+                    }
+                } catch (_: Exception) {}
+            }
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    ) {
+        Text(
+            if (flash) "چسبانده شد ✓" else "📋 چسباندن",
+            style = T.muted.copy(
+                color = if (flash) Honey.ok else Honey.muted,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+            ),
+        )
+    }
+}
+
+/// The device id — tap to copy (support transfers), styled as a quiet chip.
+@Composable
+private fun CopyDeviceChip() {
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(2_000)
+            copied = false
+        }
+    }
+    Row(
+        Modifier
+            .clip(ChipShape)
+            .background(Honey.track.copy(alpha = 0.6f))
+            .border(1.dp, if (copied) Honey.ok.copy(alpha = 0.5f) else Honey.divider, ChipShape)
+            .clickable {
+                try {
+                    java.awt.Toolkit.getDefaultToolkit().systemClipboard.setContents(
+                        java.awt.datatransfer.StringSelection(LicenseManager.installId), null,
+                    )
+                    copied = true
+                } catch (_: Exception) {}
+            }
+            .padding(horizontal = 14.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Text(
+            if (copied) "کپی شد ✓" else "شناسهٔ دستگاه: " + faDigits(LicenseManager.installId.take(12)) + "…",
+            style = T.muted.copy(
+                color = if (copied) Honey.ok else Honey.muted,
+                fontSize = 12.sp,
+            ),
+        )
+        if (!copied) {
+            Spacer(Modifier.width(6.dp))
+            Text("برای انتقال اشتراک، با یک تپ کپی کن", style = T.muted.copy(fontSize = 10.5.sp))
         }
     }
 }

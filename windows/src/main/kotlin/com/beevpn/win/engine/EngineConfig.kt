@@ -147,6 +147,10 @@ object EngineConfig {
 
     /// The WARP wireguard outbound — the registered (or manual wg-quick)
     /// identity, the same data the Android core keeps in aether.toml.
+    /// peers[0].reserved carries the registration's client_id bytes — the
+    /// exact bytes the aether core injects at pkt[1..4]. Cloudflare silently
+    /// drops reserved-less handshakes, which showed up as
+    /// «تونل بالا آمد اما خروجی (نود/WARP) ترافیک پاس نمی‌دهد».
     fun warpExit(identity: WarpIdentity): JSONObject = JSONObject()
         .put("tag", "bee-exit")
         .put("protocol", "wireguard")
@@ -166,7 +170,12 @@ object EngineConfig {
                         JSONObject()
                             .put("publicKey", identity.peerPublicKey)
                             .put("endpoint", identity.endpoint)
-                            .put("allowedIPs", JSONArray().put("0.0.0.0/0").put("::/0")),
+                            .put("allowedIPs", JSONArray().put("0.0.0.0/0").put("::/0"))
+                            .apply {
+                                identity.reservedBytes()?.let { reserved ->
+                                    put("reserved", JSONArray().apply { reserved.forEach { put(it) } })
+                                }
+                            },
                     ),
                 )
                 .put("noKernelTun", true)

@@ -1,6 +1,7 @@
 package com.beevpn.win.tunnel
 
 import com.beevpn.win.AppPaths
+import com.beevpn.win.faNum
 import com.beevpn.win.license.LicenseManager
 import com.beevpn.win.SecureStore
 import com.beevpn.win.engine.AnytlsSidecarConfig
@@ -95,6 +96,11 @@ object TunnelController {
     private var xray: EngineProcess? = null
     private var sidecar: EngineProcess? = null
 
+    /// Position in WARP's port ladder for THIS connect — rotated when the
+    /// egress is dead (Cloudflare's UDP ports degrade one by one on Iranian
+    /// carriers; 2408 is throttled long before 500/1701/4500).
+    @Volatile private var warpPortIdx = 0
+
     fun init() {
         refreshPool()
     }
@@ -125,6 +131,7 @@ object TunnelController {
 
     fun connect() {
         userDisconnect = false
+        warpPortIdx = 0   // a fresh user-initiated connect restarts the ladder at 2408
         scope.launch { mutex.withLock { withContext(Dispatchers.IO) { connectBlocking() } } }
     }
 
@@ -185,79 +192,94 @@ object TunnelController {
             val baseline = withContext(Dispatchers.IO) { TunnelVerifier.traceIpDirect(6_000L) }
             TunnelVerifier.log("baseline egress: ${baseline ?: "unknown"}")
 
-            val exit = resolveExit()   // picks transport + provisions WARP when needed
-            if (exit == null) { return } // resolveExit already called fail()
-            val sidecarNeeded = exit.sidecarConfig != null
+            /// One resolved exit: config + engines + verification. The WARP
+            /// ladder re-runs it per port until the egress answers.
+            suspend fun bringUp(exit: ResolvedExit): Verdict {
+                setState(State.STARTING, "راه‌اندازی موتور…")
 
-            setState(State.STARTING, "راه‌اندازی موتور…")
-
-            // xray: TUN + SOCKS 1819 + exit. IPv6 entries are included only
-            // when the system actually has IPv6 — with IPv6 disabled
-            // system-wide, Xray's TUN refuses to start.
-            val ipv6 = withContext(Dispatchers.IO) { TunnelVerifier.ipv6Available() }
-            val xrayConfig = EngineConfig.build(
-                useTun = needsTun,
-                ipv6Available = ipv6,
-                exitOutbound = exit.outbound,
-                fragmentOnDirect = fragmentOnDirect,
-            )
-            val xrayConfigFile = File(AppPaths.runDir, "xray.json")
-            xrayConfigFile.writeText(xrayConfig.toString(2))
-
-            if (sidecarNeeded) {
-                val sidecarFile = File(AppPaths.runDir, "sidecar.json")
-                sidecarFile.writeText(exit.sidecarConfig!!.toString(2))
-            }
-
-            val xrayExe = File(cores, "xray.exe")
-            val proc = EngineProcess("xray", xrayExe, listOf("run", "-c", xrayConfigFile.absolutePath), cores)
-            proc.onLine = { line ->
-                EngineProcess.logLine("[xray] $line")
-            }
-            proc.onExit = { code ->
-                if (state == State.CONNECTED) {
-                    scheduleAutoReconnect("موتور VPN ناگهان متوقف شد (کد $code)")
-                } else if (state == State.STARTING || state == State.VERIFYING) {
-                    scope.launch {
-                        mutex.withLock { withContext(Dispatchers.IO) { stopEngines(null) } }
-                    }
-                }
-            }
-            proc.start()
-            xray = proc
-            if (!EngineProcess.awaitPort(EngineConfig.SOCKS_PORT, 20_000) { proc.isAlive }) {
-                fail("xray روی پورت ${EngineConfig.SOCKS_PORT} بالا نیامد — گزارش پیشرفته را ببین")
-                return
-            }
-
-            if (sidecarNeeded) {
-                val sbExe = File(cores, "sing-box.exe")
-                val sc = EngineProcess(
-                    "sing-box", sbExe,
-                    listOf("run", "-c", File(AppPaths.runDir, "sidecar.json").absolutePath),
-                    cores,
+                // xray: TUN + SOCKS 1819 + exit. IPv6 entries are included only
+                // when the system actually has IPv6 — with IPv6 disabled
+                // system-wide, Xray's TUN refuses to start.
+                val ipv6 = withContext(Dispatchers.IO) { TunnelVerifier.ipv6Available() }
+                val xrayConfig = EngineConfig.build(
+                    useTun = needsTun,
+                    ipv6Available = ipv6,
+                    exitOutbound = exit.outbound,
+                    fragmentOnDirect = fragmentOnDirect,
                 )
-                sc.onLine = { EngineProcess.logLine("[sing-box] $it") }
-                sc.onExit = { code ->
-                    if (state == State.CONNECTED && code != 0) {
-                        scheduleAutoReconnect("سایدکار AnyTLS متوقف شد (کد $code)")
+                val xrayConfigFile = File(AppPaths.runDir, "xray.json")
+                xrayConfigFile.writeText(xrayConfig.toString(2))
+
+                if (exit.sidecarConfig != null) {
+                    val sidecarFile = File(AppPaths.runDir, "sidecar.json")
+                    sidecarFile.writeText(exit.sidecarConfig.toString(2))
+                }
+
+                val proc = EngineProcess("xray", File(cores, "xray.exe"), listOf("run", "-c", xrayConfigFile.absolutePath), cores)
+                proc.onLine = { line ->
+                    EngineProcess.logLine("[xray] $line")
+                }
+                proc.onExit = { code ->
+                    if (state == State.CONNECTED) {
+                        scheduleAutoReconnect("موتور VPN ناگهان متوقف شد (کد $code)")
+                    } else if (state == State.STARTING || state == State.VERIFYING) {
+                        scope.launch {
+                            mutex.withLock { withContext(Dispatchers.IO) { killEnginesQuiet() } }
+                        }
                     }
                 }
-                sc.start()
-                sidecar = sc
-                if (!EngineProcess.awaitPort(EngineConfig.ANYTLS_SIDECAR_PORT, 12_000) { sc.isAlive }) {
-                    fail("سایدکار AnyTLS روی پورت ${EngineConfig.ANYTLS_SIDECAR_PORT} بالا نیامد")
-                    return
+                proc.start()
+                xray = proc
+                if (!EngineProcess.awaitPort(EngineConfig.SOCKS_PORT, 20_000) { proc.isAlive }) {
+                    return Verdict("xray روی پورت ${EngineConfig.SOCKS_PORT} بالا نیامد — گزارش پیشرفته را ببین")
+                }
+
+                if (exit.sidecarConfig != null) {
+                    val sc = EngineProcess(
+                        "sing-box", File(cores, "sing-box.exe"),
+                        listOf("run", "-c", File(AppPaths.runDir, "sidecar.json").absolutePath),
+                        cores,
+                    )
+                    sc.onLine = { EngineProcess.logLine("[sing-box] $it") }
+                    sc.onExit = { code ->
+                        if (state == State.CONNECTED && code != 0) {
+                            scheduleAutoReconnect("سایدکار AnyTLS متوقف شد (کد $code)")
+                        }
+                    }
+                    sc.start()
+                    sidecar = sc
+                    if (!EngineProcess.awaitPort(EngineConfig.ANYTLS_SIDECAR_PORT, 12_000) { sc.isAlive }) {
+                        return Verdict("سایدکار AnyTLS روی پورت ${EngineConfig.ANYTLS_SIDECAR_PORT} بالا نیامد")
+                    }
+                }
+
+                if (!needsTun) return Verdict(null)
+                setState(State.VERIFYING, "بررسی تونل سیستم…")
+                return withContext(Dispatchers.IO) { verifyTunnelUp(baseline, exit.isWarp) }
+            }
+
+            var exit = resolveExit(warpPortIdx) ?: return
+            var verdict = bringUp(exit)
+
+            // The WARP ladder: a tunnel that comes up but stays deaf is the
+            // one failure a different PORT can actually cure — rotate
+            // 2408 → 500 → 1701 → 4500 before showing the buyer an error.
+            if (verdict.egressDead && exit.isWarp) {
+                for (idx in (warpPortIdx + 1) until WarpProvisioner.portLadder.size) {
+                    warpPortIdx = idx
+                    withContext(Dispatchers.IO) { killEnginesQuiet() }
+                    val port = WarpProvisioner.portLadder[idx]
+                    setState(State.STARTING, "خروجی WARP جواب نداد — امتحان با پورت ${faNum(port)}…")
+                    TunnelVerifier.log("warp ladder: rotating endpoint port → $port")
+                    exit = resolveExit(warpPortIdx) ?: return
+                    verdict = bringUp(exit)
+                    if (!verdict.egressDead) break
                 }
             }
 
-            if (needsTun) {
-                setState(State.VERIFYING, "بررسی تونل سیستم…")
-                val verdict = withContext(Dispatchers.IO) { verifyTunnelUp(baseline) }
-                if (verdict != null) {
-                    fail(verdict)
-                    return
-                }
+            if (verdict.message != null) {
+                fail(if (verdict.egressDead && exit.isWarp) warpDeadMessage() else verdict.message)
+                return
             }
 
             connectedSince = System.currentTimeMillis() / 1000
@@ -270,12 +292,18 @@ object TunnelController {
         }
     }
 
-    /// The Android rule: CONNECTED is earned, never assumed. Returns null
-    /// only when (1) the TUN owns the system default route, (2) real bytes
+    private fun warpDeadMessage(): String =
+        "تونل بالا آمد اما خروجی WARP روی هیچ‌کدام از پورت‌های " +
+            WarpProvisioner.portLadder.joinToString("/") +
+            " پاس نداد — شبکه‌ات UDP را فیلتر می‌کند. به حالت SHARD برو (نودها را «به‌روزرسانی نودها» کن) " +
+            "یا در تب پیشرفته کانفیگ دستی بگذار."
+
+    /// The Android rule: CONNECTED is earned, never assumed. Success only
+    /// when (1) the TUN owns the system default route, (2) real bytes
     /// flow through the engine's SOCKS to the far end, and (3) the SYSTEM's
     /// own egress differs from the pre-connect baseline. Anything else is an
     /// honest, actionable Persian failure — never a fake green dot.
-    private fun verifyTunnelUp(baseline: String?): String? {
+    private fun verifyTunnelUp(baseline: String?, warpExit: Boolean): Verdict {
         // 1) default route through the TUN — xray installs it at startup;
         //    give it 15 s, then win the metric race ourselves.
         var routeUp = false
@@ -287,7 +315,7 @@ object TunnelController {
         if (!routeUp) {
             TunnelVerifier.log("xray route not winning the metric race — installing fallback default route")
             if (!TunnelVerifier.ensureTunRoute()) {
-                return "تونل ساخته شد اما مسیر پیش‌فرض ویندوز از آن عبور نمی‌کند — «گزارش پیشرفته» را ببین"
+                return Verdict("تونل ساخته شد اما مسیر پیش‌فرض ویندوز از آن عبور نمی‌کند — «گزارش پیشرفته» را ببین")
             }
         }
 
@@ -298,7 +326,13 @@ object TunnelController {
             exitIp = TunnelVerifier.traceIpViaSocks(EngineConfig.SOCKS_PORT, 15_000)
         }
         if (exitIp == null) {
-            return "تونل بالا آمد اما خروجی (نود/WARP) ترافیک پاس نمی‌دهد — نود دیگری را امتحان کن یا «به‌روزرسانی نودها» را بزن"
+            TunnelVerifier.log("engine egress: DEAD (no trace answer through SOCKS)")
+            return if (warpExit) {
+                // The ladder keeps trying — this message is transient.
+                Verdict("تونل بالا آمد اما خروجی WARP ترافیک پاس نمی‌دهد", egressDead = true)
+            } else {
+                Verdict("تونل بالا آمد اما خروجی (نود) ترافیک پاس نمی‌دهد — نود دیگری را امتحان کن یا «به‌روزرسانی نودها» را بزن")
+            }
         }
         TunnelVerifier.log("engine egress: $exitIp")
 
@@ -309,12 +343,12 @@ object TunnelController {
             val sysIp = TunnelVerifier.traceIpDirect(12_000)
             TunnelVerifier.log("system egress: ${sysIp ?: "unknown"} (baseline $baseline)")
             if (sysIp == baseline) {
-                return "تونل سالم است اما ترافیک سیستم از آن عبور نمی‌کند (خروجی سیستم = خروجی قبل از اتصال) — فایروال یا آنتی‌ویروس را بررسی کن"
+                return Verdict("تونل سالم است اما ترافیک سیستم از آن عبور نمی‌کند (خروجی سیستم = خروجی قبل از اتصال) — فایروال یا آنتی‌ویروس را بررسی کن")
             }
         } else {
             TunnelVerifier.log("baseline unknown — system probe skipped (engine e2e already passed)")
         }
-        return null
+        return Verdict(null)
     }
 
     // ------------------------------------------------------------- watchdog
@@ -371,16 +405,24 @@ object TunnelController {
 
     // ------------------------------------------------------------ transports
 
+    /// verifyTunnelUp's answer: null message = earned CONNECTED. `egressDead`
+    /// marks the «tunnel up, exit deaf» case — the only one the WARP port
+    /// ladder can actually cure.
+    private class Verdict(val message: String?, val egressDead: Boolean = false)
+
     private class ResolvedExit(
         val outbound: JSONObject?,
         val sidecarConfig: JSONObject?,
         val summary: String,
+        val isWarp: Boolean = false,
     )
 
     /// Picks the transport exactly like the phone: AUTO = fastest live SHARD
     /// node, falling back to WARP; SHARD = pinned/auto node; WARP = registered
     /// (or manual wg-quick) identity; MANUAL = the Advanced-tab wg-quick text.
-    private suspend fun resolveExit(): ResolvedExit? {
+    /// `warpPortIdx` selects the WARP UDP port for THIS attempt — the ladder
+    /// rotates it when Cloudflare's default 2408 is throttled.
+    private suspend fun resolveExit(warpPortIdx: Int): ResolvedExit? {
         val profile = when (mode) {
             Mode.WARP -> null
             Mode.MANUAL -> null
@@ -388,7 +430,8 @@ object TunnelController {
             Mode.AUTO -> pickNode(autoAllowed = true)
         }
 
-        // MANUAL: the wg-quick text wins, like the iOS Advanced tab.
+        // MANUAL: the wg-quick text wins, like the iOS Advanced tab. Its own
+        // endpoint is pinned by the user — the port ladder does not touch it.
         if (mode == Mode.MANUAL) {
             val text = manualWgQuick
                 ?: run { fail("حالت دستی فعال است اما کانفیگ wg-quick ذخیره نشده — تب پیشرفته را پر کن"); return null }
@@ -397,11 +440,18 @@ object TunnelController {
             return ResolvedExit(EngineConfig.warpExit(identity), null, "دستی — ${identity.endpoint}")
         }
 
-        // WARP (or AUTO fallback below)
+        // WARP (or AUTO fallback below) — endpoint rides the port ladder.
         if (profile == null) {
             setState(State.PROVISIONING, "ثبت‌نام WARP…")
-            val identity = ensureWarpIdentity()
-            return identity?.let { ResolvedExit(EngineConfig.warpExit(it), null, "WARP — ${it.endpoint}") }
+            val identity = ensureWarpIdentity() ?: return null
+            val port = WarpProvisioner.portLadder[warpPortIdx.coerceIn(0, WarpProvisioner.portLadder.size - 1)]
+            val endpoint = endpointWithPort(identity.endpoint, port)
+            return ResolvedExit(
+                EngineConfig.warpExit(identity.copy(endpoint = endpoint)),
+                null,
+                "WARP — $endpoint",
+                isWarp = true,
+            )
         }
 
         return when (profile.configType) {
@@ -421,6 +471,10 @@ object TunnelController {
             }
         }
     }
+
+    /// "engage.cloudflareclient.com:2408" + 500 → "engage.cloudflareclient.com:500".
+    private fun endpointWithPort(endpoint: String, port: Int): String =
+        endpoint.substringBeforeLast(":") + ":" + port
 
     /// AUTO prefers the fastest alive node and falls back to WARP; SHARD mode
     /// refuses to silently change transport — it reports the dead pool instead.
@@ -451,8 +505,18 @@ object TunnelController {
 
     /// The saved identity, or a fresh registration — first direct, then
     /// through a running SHARD session, mirroring IdentityProvisioner.kt.
+    ///
+    /// Migration: identities registered before 1.2.0 carry no client_id (the
+    /// reserved bytes Cloudflare requires inside the handshake). No port in
+    /// the ladder can save those — they are purged so a fresh registration
+    /// mints a complete identity.
     private suspend fun ensureWarpIdentity(): WarpIdentity? {
-        savedOrManual()?.let { return it }
+        val current = savedOrManual()
+        if (current != null) {
+            if (current.deviceId == "manual" || current.clientIdB64.isNotBlank()) return current
+            TunnelVerifier.log("saved WARP identity has no client_id (pre-1.2.0) — refreshing registration")
+            WarpProvisioner.purge()
+        }
         return try {
             WarpProvisioner.register(null)
         } catch (e: Exception) {
@@ -487,13 +551,20 @@ object TunnelController {
 
     // ---------------------------------------------------------- disconnect
 
-    private fun stopEngines(caption: String?) {
+    /// Stops the engines WITHOUT touching the UI state — the ladder rotation
+    /// and the early-exit crash handler use it while a connect is still
+    /// visually in progress.
+    private fun killEnginesQuiet() {
         watchdogJob?.cancel()
         sidecar?.stop()
         sidecar = null
         xray?.stop()
         xray = null
         if (AppPaths.isWindows()) TunnelVerifier.removeFallbackRoute()
+    }
+
+    private fun stopEngines(caption: String?) {
+        killEnginesQuiet()
         connectedSince = 0
         setState(State.DISCONNECTED, caption ?: "قطع است")
     }
