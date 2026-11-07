@@ -44,7 +44,7 @@ import com.beevpn.win.tunnel.TunnelController
 /// transport segmented control and the hive pass banner. The desktop twin of
 /// HomeView.swift / the Android orbit screen.
 @Composable
-fun HomeView() {
+fun HomeView(onOpenProfile: () -> Unit = {}) {
     val state = TunnelController.state
     val info = LicenseManager.subscriptionInfo()
 
@@ -90,9 +90,10 @@ fun HomeView() {
             }
 
             // Subscription banner — the days-left line from the buyer's own hive pass.
+            // Tap it to open the profile page (plans, expiry, خروج از حساب).
             if (info.hasToken) {
                 Spacer(Modifier.height(12.dp))
-                GlassCard(Modifier.width(470.dp)) {
+                GlassCard(Modifier.width(470.dp).clickable { onOpenProfile() }) {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Box(
                             Modifier

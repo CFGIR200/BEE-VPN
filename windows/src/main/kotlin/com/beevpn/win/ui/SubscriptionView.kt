@@ -19,6 +19,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -27,6 +30,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import com.beevpn.win.faDigits
 import com.beevpn.win.faNum
 import com.beevpn.win.gregorianString
@@ -43,6 +47,9 @@ import com.beevpn.win.license.LicenseManager
 fun SubscriptionView() {
     val info = LicenseManager.subscriptionInfo()
     val now = System.currentTimeMillis() / 1000
+    // خروج یک کار پرخطر است — اول تأیید بگیر؛ رمز و کد از این دستگاه پاک
+    // می‌شوند و برای ورود دوباره باید دوباره فعال‌سازی کند.
+    var confirmOut by remember { mutableStateOf(false) }
 
     Box(Modifier.fillMaxSize()) {
         Column(
@@ -136,15 +143,40 @@ fun SubscriptionView() {
                         title = "🚪 خروج از حساب",
                         filled = false,
                         danger = true,
-                    ) {
-                        LicenseManager.signOut()
-                    }
+                    ) { confirmOut = true }
                 }
                 Spacer(Modifier.height(14.dp))
                 Text(
                     "هر اشتراک فقط به یک دستگاه وصل است. دستگاه را عوض کردی؟ برای انتقال از پشتیبانی بخواه.",
                     style = T.muted.copy(fontSize = 11.5.sp),
                 )
+            }
+        }
+    }
+
+    if (confirmOut) {
+        Dialog(onDismissRequest = { confirmOut = false }) {
+            GlassCard(Modifier.width(430.dp)) {
+                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        "🚪 خروج از حساب؟",
+                        style = T.h2.copy(color = Honey.danger),
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "لایسنس از این دستگاه پاک می‌شود و اپ همان لحظه قفل و اتصال قطع می‌شود.\n" +
+                            "پروفایل تو در ربات می‌ماند — برای ورود دوباره، کد فعال‌سازی تازه از 🛍 خرید بگیر.",
+                        style = T.muted,
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp)) {
+                        HoneyButton(title = "انصراف", filled = false) { confirmOut = false }
+                        HoneyButton(title = "خروج", filled = true, danger = true) {
+                            confirmOut = false
+                            LicenseManager.signOut()
+                        }
+                    }
+                }
             }
         }
     }

@@ -123,6 +123,11 @@ private fun AppRoot() {
     // after a successful activation snap the content back to خانه.
     LaunchedEffect(gate) {
         if (gate == LicenseManager.Gate.GRANTED && tab != Tab.HOME) tab = Tab.HOME
+        // خروج از حساب / انقضا / ابطال: اپ قفل می‌شود — تونل هم باید همان
+        // لحظه قطع شود؛ اپِ قفل هرگز نباید ترافیک را عبور دهد.
+        if (gate == LicenseManager.Gate.LOCKED) {
+            try { TunnelController.disconnect() } catch (_: Throwable) {}
+        }
     }
 
     // QA tour hook (BEE_UI_TOUR=1): cycle tabs so offscreen screenshot rigs
@@ -267,7 +272,7 @@ private fun AppRoot() {
                         key == "boot" -> {}
                         key == "gate" -> GateView()
                         else -> when (tab) {
-                            Tab.HOME -> HomeView()
+                            Tab.HOME -> HomeView(onOpenProfile = { tab = Tab.SUBSCRIPTION })
                             Tab.NODES -> NodesView()
                             Tab.SUBSCRIPTION -> SubscriptionView()
                             Tab.ADVANCED -> AdvancedView()
