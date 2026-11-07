@@ -70,7 +70,7 @@ jobs:
           Get-Content "$dst/manifest.txt"
           Get-ChildItem $dst | Format-Table Name, Length
 
-      - name: Resolve the app version (single source: build.gradle.kts)
+      - name: "Resolve the app version (single source: build.gradle.kts)"
         shell: pwsh
         run: |
           $line = Select-String -Path windows/build.gradle.kts -Pattern '^version\s*=\s*"([^"]+)"'
