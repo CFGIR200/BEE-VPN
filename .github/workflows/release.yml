@@ -83,6 +83,25 @@ jobs:
             echo "hev source not present - skipping (legacy engine only)"
           fi
 
+      - name: Generate Tor GeoIP assets (filtered per tools/filter-geoip.py)
+        run: |
+          # ExitNodes {cc} is dead without a GeoIP database: Tor cannot map a
+          # country to relays, the candidate set comes out empty and bootstrap
+          # stalls at 45-50%. The .gitignore keeps these derived files out of
+          # git on purpose - they are regenerated here on every build from the
+          # checksum-pinned Tor tarball (same pin as tor-binaries.yml), then
+          # filtered down to the countries TorRegions.kt actually offers:
+          # 9.5 MB -> ~6.4 MB on disk, ~1.8 MB inside the APK.
+          set -euo pipefail
+          TOR_VERSION=0.4.9.11
+          EXPECTED=2e6c1720118c812acf0079fd47cf91b6bfaba5d766c321c4d3d2a28d6a11a8ed
+          curl -fsSL --retry 3 -o /tmp/tor.tar.gz "https://dist.torproject.org/tor-$TOR_VERSION.tar.gz"
+          echo "$EXPECTED  /tmp/tor.tar.gz" | sha256sum -c -
+          mkdir -p /tmp/torgeoip
+          tar -xzf /tmp/tor.tar.gz -C /tmp/torgeoip "tor-$TOR_VERSION/src/config/geoip" "tor-$TOR_VERSION/src/config/geoip6"
+          python3 tools/filter-geoip.py "/tmp/torgeoip/tor-$TOR_VERSION/src/config/geoip" app/src/main/java/com/msnguard/vpn/TorRegions.kt app/src/main/assets
+          ls -la app/src/main/assets/geoip app/src/main/assets/geoip6
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
