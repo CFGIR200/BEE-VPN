@@ -14,7 +14,10 @@ import java.io.File
 object CoreExtractor {
 
     private val REQUIRED = listOf("xray.exe", "wintun.dll")
-    private val OPTIONAL = listOf("sing-box.exe", "geoip.dat", "geosite.dat")
+    private val OPTIONAL = listOf(
+        "sing-box.exe", "geoip.dat", "geosite.dat",
+        "aether.exe", "lyrebird.exe", "psiphon-tunnel-core.exe",
+    )
 
     /// Returns the cores dir ready to use, or null when nothing usable could
     /// be produced (the caller turns that into a buyer-readable message).

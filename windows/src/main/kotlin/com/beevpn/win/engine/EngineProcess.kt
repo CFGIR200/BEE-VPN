@@ -13,6 +13,7 @@ class EngineProcess(
     private val exe: File,
     private val args: List<String>,
     private val workingDir: File,
+    private val env: Map<String, String> = emptyMap(),
 ) {
 
     @Volatile var onLine: ((String) -> Unit)? = null
@@ -27,8 +28,14 @@ class EngineProcess(
             val pb = ProcessBuilder(exe.absolutePath, *args.toTypedArray())
                 .directory(workingDir)
                 .redirectErrorStream(true)
-            val env = pb.environment()
-            env["BEE_ENGINE"] = name
+            val penv = pb.environment()
+            // Env hygiene: strip every inherited AETHER_* key first — a stale
+            // AETHER_UPSTREAM from the parent shell must never leak into the
+            // engine (the phone's applyEnv() unsets the same set between
+            // connects, CoreConfig.kt:759-774).
+            penv.keys.removeAll { it.startsWith("AETHER_") }
+            env.forEach { (k, v) -> penv[k] = v }
+            penv["BEE_ENGINE"] = name
             val p = pb.start()
             process = p
             Thread({

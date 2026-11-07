@@ -144,7 +144,7 @@ fun HomeView(onOpenProfile: () -> Unit = {}) {
             if (TunnelController.mode == TunnelController.Mode.AUTO) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "خودکار: سریع‌ترین نود SHARD، و اگر زنده نبود WARP",
+                    "خودکار: مثل اندروید — مسابقهٔ واقعی نودهای SHARD، و اگر زنده نبودند WARP (موتور اندروید)",
                     style = T.muted,
                 )
             }
@@ -156,23 +156,25 @@ fun HomeView(onOpenProfile: () -> Unit = {}) {
     }
 }
 
-/// The transport segmented control — four modes in one glass rail, the chosen
-/// one carried by a molten gold pill that glides between positions.
+/// The transport selector — the phone's protocol list, desktop-shaped: seven
+/// modes in a two-row glass grid (4 + 3), the chosen one carried by the same
+/// molten gold pill. AUTO/SHARD/WARP/MASQUE on the first row, GOOL/MiM/manual
+/// beneath — the exact protocol family the Android app exposes.
 @Composable
 private fun ModeRow() {
     var selected by remember(TunnelController.mode) { mutableStateOf(TunnelController.mode) }
-    val items = listOf(
+    val row1 = listOf(
         TunnelController.Mode.AUTO to "⚡ خودکار",
         TunnelController.Mode.SHARD to "◈ SHARD",
         TunnelController.Mode.WARP to "☁ WARP",
+        TunnelController.Mode.MASQUE to "🎭 ماسک",
+    )
+    val row2 = listOf(
+        TunnelController.Mode.GOOL to "🔗 گول",
+        TunnelController.Mode.MIM to "🪆 ماسک²",
         TunnelController.Mode.MANUAL to "✍ دستی",
     )
     val segW = 96.dp
-    val pillX by animateDpAsState(
-        segW * items.indexOfFirst { it.first == selected },
-        spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow),
-        label = "modePill",
-    )
 
     Box(
         Modifier
@@ -181,38 +183,51 @@ private fun ModeRow() {
             .border(1.dp, Honey.divider, RoundedCornerShape(15.dp))
             .padding(4.dp),
     ) {
-        Box(
-            Modifier
-                .offset(x = pillX)
-                .width(segW)
-                .height(36.dp)
-                .clip(RoundedCornerShape(11.dp))
-                .background(
-                    Brush.verticalGradient(listOf(Honey.goldTop, Honey.goldBot)),
-                )
-                .border(1.dp, Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.45f), Color.Transparent)), RoundedCornerShape(11.dp)),
-        )
-        Row {
-            items.forEach { (m, label) ->
-                val on = selected == m
-                Box(
-                    Modifier
-                        .width(segW)
-                        .height(36.dp)
-                        .clickable {
-                            selected = m
-                            TunnelController.mode = m
-                        },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        label,
-                        style = T.body.copy(
-                            color = if (on) Honey.onGold else Honey.muted,
-                            fontSize = 12.5.sp,
-                            fontWeight = if (on) androidx.compose.ui.text.font.FontWeight.Bold else androidx.compose.ui.text.font.FontWeight.Normal,
-                        ),
-                    )
+        Column {
+            listOf(row1, row2).forEach { items ->
+                Box {
+                    val on = items.any { it.first == selected }
+                    if (on) {
+                        Box(
+                            Modifier
+                                .offset(x = segW * items.indexOfFirst { it.first == selected })
+                                .width(segW)
+                                .height(36.dp)
+                                .clip(RoundedCornerShape(11.dp))
+                                .background(
+                                    Brush.verticalGradient(listOf(Honey.goldTop, Honey.goldBot)),
+                                )
+                                .border(
+                                    1.dp,
+                                    Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.45f), Color.Transparent)),
+                                    RoundedCornerShape(11.dp),
+                                ),
+                        )
+                    }
+                    Row {
+                        items.forEach { (m, label) ->
+                            val isOn = selected == m
+                            Box(
+                                Modifier
+                                    .width(segW)
+                                    .height(36.dp)
+                                    .clickable {
+                                        selected = m
+                                        TunnelController.mode = m
+                                    },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    label,
+                                    style = T.body.copy(
+                                        color = if (isOn) Honey.onGold else Honey.muted,
+                                        fontSize = 12.5.sp,
+                                        fontWeight = if (isOn) androidx.compose.ui.text.font.FontWeight.Bold else androidx.compose.ui.text.font.FontWeight.Normal,
+                                    ),
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }

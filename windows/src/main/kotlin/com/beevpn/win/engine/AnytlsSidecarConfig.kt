@@ -42,6 +42,9 @@ object AnytlsSidecarConfig {
                         .put("server", profile.server ?: "")
                         .put("server_port", profile.serverPort?.toIntOrNull() ?: 443)
                         .put("password", profile.password ?: "")
+                        // Android's AnyTlsManager keeps 5 warm sessions so the
+                        // first request never pays the TLS handshake twice.
+                        .put("min_idle_session", 5)
                         .put("tls", tls),
                 ),
             )

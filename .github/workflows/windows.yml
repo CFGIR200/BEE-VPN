@@ -25,7 +25,7 @@ jobs:
           java-version: "21"
 
       # ── Vendored engines, pinned + checksum-verified ─────────────────────
-      - name: Vendor cores (xray + sing-box + wintun)
+      - name: Vendor cores (xray + sing-box + wintun + aether)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -40,6 +40,15 @@ jobs:
           if ($h -ne "99185d75d314a07dbba4a130c8ad986cbeb629a07927975636b341ca61f991df") { throw "sing-box zip checksum mismatch: $h" }
           Expand-Archive sb.zip -DestinationPath sbsrc
 
+          # The phone's OWN engine (core/aether, same 2.3.0 the Android jniLibs
+          # build carries) as the standalone Windows binary upstream ships —
+          # plus the pluggable transports it can drive (lyrebird,
+          # psiphon-tunnel-core). Checksum-pinned like every other core.
+          Invoke-WebRequest -Uri "https://github.com/CluvexStudio/aether/releases/download/v2.3.0/aether-windows-x86_64.zip" -OutFile aether.zip
+          $h = (Get-FileHash aether.zip -Algorithm SHA256).Hash.ToLower()
+          if ($h -ne "0cc32dd2d7573f91d2e55d4f427bfe4c6f6252342494e1b410d61b12d1e4dc79") { throw "aether zip checksum mismatch: $h" }
+          Expand-Archive aether.zip -DestinationPath aethersrc
+
           # Cores go under windows/cores-bin/cores/ — a Gradle resources srcDir —
           # so they end up INSIDE the app jar; the app extracts them on first
           # connect. This ships with both the MSI and the portable zip.
@@ -50,6 +59,11 @@ jobs:
           Copy-Item xraysrc/geosite.dat $dst/
           Copy-Item xraysrc/wintun.dll  $dst/
           Copy-Item sbsrc/sing-box-1.14.4-windows-amd64/sing-box.exe $dst/
+          Copy-Item aethersrc/aether.exe $dst/
+          # PT binaries ride flat next to the engines — the app passes their
+          # paths to the core explicitly (AETHER_TOR_PT / AETHER_PSIPHON_BIN).
+          Copy-Item aethersrc/pt/lyrebird.exe $dst/
+          Copy-Item aethersrc/pt/psiphon-tunnel-core.exe $dst/
           # size manifest the app uses to detect partial/stale extractions
           Get-ChildItem $dst | Where-Object { $_.Name -ne "manifest.txt" } |
             ForEach-Object { "$($_.Name):$($_.Length)" } | Set-Content "$dst/manifest.txt"
@@ -80,30 +94,36 @@ jobs:
           Get-ChildItem $app | Format-Table Name, Length
           # cores ride INSIDE the app jars (extracted on first connect) —
           # scan every jar: the main jar is content-hashed, not a fixed name.
-          $found = $false
+          $foundXray = $false
+          $foundAether = $false
           Get-ChildItem "$app/app" -Filter "*.jar" | ForEach-Object {
-            if (-not $found) {
+            if (-not $foundXray) {
               $hits = jar tf $_.FullName | Select-String "cores/xray.exe"
-              if ($hits) { $found = $true; Write-Host "cores present in $($_.Name)" }
+              if ($hits) { $foundXray = $true; Write-Host "cores present in $($_.Name)" }
+            }
+            if (-not $foundAether) {
+              $hits = jar tf $_.FullName | Select-String "cores/aether.exe"
+              if ($hits) { $foundAether = $true; Write-Host "aether present in $($_.Name)" }
             }
           }
-          if (-not $found) { throw "cores did not land inside the app jar" }
+          if (-not $foundXray) { throw "cores did not land inside the app jar" }
+          if (-not $foundAether) { throw "aether.exe did not land inside the app jar" }
           Copy-Item windows/BEE-VPN.bat "$app/BEE-VPN.bat"
           Copy-Item windows/README-FA.txt "$app/README-FA.txt"
-          Compress-Archive -Path $app -DestinationPath BEE-VPN-1.2.0-portable-x64.zip
+          Compress-Archive -Path $app -DestinationPath BEE-VPN-1.3.0-portable-x64.zip
 
       - name: Upload MSI
         uses: actions/upload-artifact@v4
         with:
-          name: BEE-VPN-1.2.0-msi-x64
+          name: BEE-VPN-1.3.0-msi-x64
           path: windows/build/compose/binaries/main/msi/*.msi
           if-no-files-found: error
 
       - name: Upload portable zip
         uses: actions/upload-artifact@v4
         with:
-          name: BEE-VPN-1.2.0-portable-x64
-          path: BEE-VPN-1.2.0-portable-x64.zip
+          name: BEE-VPN-1.3.0-portable-x64
+          path: BEE-VPN-1.3.0-portable-x64.zip
           if-no-files-found: error
 
       # Tag builds land on the GitHub Release next to the signed APKs

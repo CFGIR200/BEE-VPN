@@ -44,6 +44,8 @@ object EngineConfig {
         ipv6Available: Boolean,
         exitOutbound: JSONObject?,
         fragmentOnDirect: Boolean,
+        shardParity: Boolean = false,
+        includeSocksIn: Boolean = true,
     ): JSONObject {
         val root = JSONObject()
         root.put("log", JSONObject().put("loglevel", "warning"))
@@ -96,6 +98,7 @@ object EngineConfig {
                         .put("destOverride", JSONArray().put("http").put("tls").put("quic")),
                 ),
         )
+        if (!includeSocksIn) inbounds.remove(inbounds.length() - 1)
         root.put("inbounds", inbounds)
 
         val outbounds = JSONArray()
@@ -122,6 +125,24 @@ object EngineConfig {
                 ),
         )
         outbounds.put(JSONObject().put("tag", "block").put("protocol", "blackhole"))
+        // Android's live SHARD policy (ShardConfigs.tunnelConfig): keep every
+        // connection alive indefinitely and let the OS own the idle timeout —
+        // a desktop tunnel must never die from xray's default 300 s connIdle.
+        if (shardParity) {
+            root.put(
+                "policy",
+                JSONObject().put(
+                    "levels",
+                    JSONObject()
+                        .put("0", JSONObject().put("uplinkOnly", 0).put("downlinkOnly", 0))
+                        .put(
+                            "1",
+                            JSONObject().put("uplinkOnly", 0).put("downlinkOnly", 0)
+                                .put("connIdle", 12),
+                        ),
+                ),
+            )
+        }
         root.put("outbounds", outbounds)
 
         val rules = JSONArray().put(
@@ -142,8 +163,22 @@ object EngineConfig {
     }
 
     /// The selected SHARD node as an xray outbound, tagged "bee-exit".
-    fun nodeExit(profile: com.beevpn.win.shard.ShardProfile): JSONObject =
-        com.beevpn.win.shard.ShardOutboundBuilder.outbound(profile, "bee-exit")
+    /// VLESS nodes carry Android's exact mux (concurrency 8, xudp 16, QUIC
+    /// skip) — the measured fast-connect lever on the phone.
+    fun nodeExit(profile: com.beevpn.win.shard.ShardProfile): JSONObject {
+        val exit = com.beevpn.win.shard.ShardOutboundBuilder.outbound(profile, "bee-exit")
+        if (profile.configType == com.beevpn.win.shard.ShardType.VLESS) {
+            exit.put(
+                "mux",
+                JSONObject()
+                    .put("enabled", true)
+                    .put("concurrency", 8)
+                    .put("xudpConcurrency", 16)
+                    .put("xudpProxyUDP443", "skip"),
+            )
+        }
+        return exit
+    }
 
     /// The WARP wireguard outbound — the registered (or manual wg-quick)
     /// identity, the same data the Android core keeps in aether.toml.
@@ -194,6 +229,20 @@ object EngineConfig {
             JSONObject()
                 .put("address", "127.0.0.1")
                 .put("port", ANYTLS_SIDECAR_PORT),
+        )
+
+    /// The WARP-family exit: a SOCKS hop into the aether core's listener on
+    /// 1819 — the desktop twin of tun2socks dialing the phone's core. UDP
+    /// rides the same hop so DNS and QUIC flow like they do on Android.
+    fun aetherBridgeExit(): JSONObject = JSONObject()
+        .put("tag", "bee-exit")
+        .put("protocol", "socks")
+        .put(
+            "settings",
+            JSONObject()
+                .put("address", "127.0.0.1")
+                .put("port", AetherEngine.SOCKS_PORT)
+                .put("udp", true),
         )
 
     /// The wg-quick text for the identity — shown in the Advanced tab and
