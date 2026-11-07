@@ -70,6 +70,15 @@ jobs:
           Get-Content "$dst/manifest.txt"
           Get-ChildItem $dst | Format-Table Name, Length
 
+      - name: Resolve the app version (single source: build.gradle.kts)
+        shell: pwsh
+        run: |
+          $line = Select-String -Path windows/build.gradle.kts -Pattern '^version\s*=\s*"([^"]+)"'
+          if (-not $line) { throw "cannot read the app version from windows/build.gradle.kts" }
+          $ver = $line.Matches[0].Groups[1].Value
+          "APP_VER=$ver" >> $env:GITHUB_ENV
+          Write-Host "app version: $ver"
+
       - name: Unit tests (the license & shard QA gate)
         working-directory: windows
         run: .\gradlew.bat test --no-daemon
@@ -110,20 +119,20 @@ jobs:
           if (-not $foundAether) { throw "aether.exe did not land inside the app jar" }
           Copy-Item windows/BEE-VPN.bat "$app/BEE-VPN.bat"
           Copy-Item windows/README-FA.txt "$app/README-FA.txt"
-          Compress-Archive -Path $app -DestinationPath BEE-VPN-1.3.0-portable-x64.zip
+          Compress-Archive -Path $app -DestinationPath "BEE-VPN-$env:APP_VER-portable-x64.zip"
 
       - name: Upload MSI
         uses: actions/upload-artifact@v4
         with:
-          name: BEE-VPN-1.3.0-msi-x64
+          name: BEE-VPN-${{ env.APP_VER }}-msi-x64
           path: windows/build/compose/binaries/main/msi/*.msi
           if-no-files-found: error
 
       - name: Upload portable zip
         uses: actions/upload-artifact@v4
         with:
-          name: BEE-VPN-1.3.0-portable-x64
-          path: BEE-VPN-1.3.0-portable-x64.zip
+          name: BEE-VPN-${{ env.APP_VER }}-portable-x64
+          path: BEE-VPN-${{ env.APP_VER }}-portable-x64.zip
           if-no-files-found: error
 
       # Tag builds land on the GitHub Release next to the signed APKs
@@ -134,4 +143,4 @@ jobs:
         with:
           files: |
             windows/build/compose/binaries/main/msi/*.msi
-            BEE-VPN-1.2.0-portable-x64.zip
+            BEE-VPN-${{ env.APP_VER }}-portable-x64.zip

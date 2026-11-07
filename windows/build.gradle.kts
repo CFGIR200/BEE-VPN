@@ -117,7 +117,9 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Msi)
             packageName = "BEE-VPN"
-            packageVersion = "1.2.0"
+            // Single source of truth: the project version — the MSI product
+            // name follows it, so a version bump is a one-line change.
+            packageVersion = project.version.toString()
             description = "BEE-VPN — the honey-fast Windows client"
             vendor = "BEE-VPN"
             windows {
