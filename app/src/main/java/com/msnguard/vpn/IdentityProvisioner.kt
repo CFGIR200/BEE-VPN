@@ -346,10 +346,16 @@ object IdentityProvisioner {
      * involving the core.
      *
      * The core is not started at this point — nothing else is up — so this
-     * speaks SOCKS5 itself and POSTs the registration the way the core would
-     * have. On success the identity is written to the file the core will read
-     * on the user's next connect, so the transport they actually wanted starts
-     * from a saved identity and never has to call the API.
+     * speaks SOCKS5 itself and runs the FULL enrollment the way the relay and
+     * direct paths do (IdentityRelayClient.enrollVia): a device-generated
+     * X25519 keypair in the request, warp_enabled PATCH, and the secp256r1
+     * certificate for MASQUE identities. The old version POSTed a keyless body
+     * and then handed the response to a saveIdentity that always returned
+     * null — this path could never produce an identity at all.
+     *
+     * On success the identity is written to the file the core will read on the
+     * user's next connect, so the transport they actually wanted starts from a
+     * saved identity and never has to call the API.
      *
      * Returns the saved file on success, null otherwise.
      */
@@ -358,42 +364,41 @@ object IdentityProvisioner {
         protocol: String,
         socksPort: Int,
     ): File? {
-        val socks = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", socksPort))
-        val body = JSONObject().apply {
-            // The core's own registration body in account::register. install_id
-            // and fcm_token are empty there too; a fresh device has neither.
-            put("install_id", "")
-            put("fcm_token", "")
-            put("tos", nowIso())
-            put("model", android.os.Build.MODEL)
-            put("serial_number", android.os.Build.SERIAL ?: "unknown")
-            put("locale", java.util.Locale.getDefault().toString())
-            put("key_type", "curve25519")
-            put("tunnel_type", "wireguard")
+        val names = when (protocol.lowercase()) {
+            "mim" -> listOf("masque", "masque-secondary")
+            "masque" -> listOf("masque")
+            "gool", "wow" -> listOf("wireguard", "secondary")
+            "wireguard", "wg" -> listOf("wireguard")
+            else -> return null
         }
+        val socks = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", socksPort))
+        val prepared = mutableListOf<Pair<File, String>>()
         return try {
-            val connection = URL(API_REGISTER_URL).openConnection(socks) as HttpURLConnection
-            connection.connectTimeout = 20_000
-            connection.readTimeout = 20_000
-            connection.requestMethod = "POST"
-            connection.setRequestProperty("Content-Type", "application/json")
-            connection.setRequestProperty("User-Agent", USER_AGENT)
-            connection.setRequestProperty("CF-Client-Version", CLIENT_VERSION)
-            connection.outputStream.use { it.write(body.toString().toByteArray()) }
-            val code = connection.responseCode
-            if (code !in 200..299) {
-                Log.w(TAG, "registration through SHARD returned HTTP $code")
-                ConnectionLog.record("Identity Vault: $protocol via Shard — HTTP $code")
-                return null
+            for (name in names) {
+                val file = when (name) {
+                    "masque" -> File(context.filesDir, "aether-masque.toml")
+                    "masque-secondary" -> File(context.filesDir, "aether-masque-secondary.toml")
+                    "secondary" -> File(context.filesDir, "aether-secondary.toml")
+                    else -> File(context.filesDir, "aether.toml")
+                }
+                if (validIdentityFile(file, name.startsWith("masque"))) continue
+                val hop = IdentityRelayClient.enrollThroughSocks(socks, name.startsWith("masque"))
+                val text = relayToml(hop.response, hop.wgPrivate, hop.cert, hop.key, hop.issued)
+                    ?: error("invalid registration response for $name")
+                prepared += file to text
             }
-            val response = connection.inputStream.bufferedReader().readText()
-            val parsed = JSONObject(response)
-            val saved = saveIdentity(context, protocol, parsed)
-            if (saved == null) {
-                Log.w(TAG, "registration through SHARD: identity response incomplete")
-                ConnectionLog.record("Identity Vault: $protocol via Shard — parse/save failed")
+            if (prepared.isEmpty()) {
+                // Every identity this protocol needs was already on disk.
+                File(context.filesDir, "aether.toml")
+            } else if (installRelayedFiles(prepared)) {
+                Log.i(TAG, "SHARD-backed enrollment stored ${prepared.size} identity file(s) for $protocol")
+                ConnectionLog.record("Identity Vault: $protocol via SHARD — ${prepared.size} identity file(s) stored")
+                prepared.first().first
+            } else {
+                Log.w(TAG, "SHARD-backed enrollment could not store the identity for $protocol")
+                ConnectionLog.record("Identity Vault: $protocol via SHARD — store failed")
+                null
             }
-            saved
         } catch (e: Exception) {
             Log.w(TAG, "registration through SHARD failed: ${e.message}")
             ConnectionLog.record("Identity Vault: $protocol via Shard — exception ${e.message?.take(140)}")
@@ -402,59 +407,30 @@ object IdentityProvisioner {
     }
 
     /**
-     * Warp Setting — Identity Vault: direct provision (Quantum ECH).
+     * Warp Setting — Identity Vault: direct provision.
      *
-     * POSTs the same registration body as [provisionThroughShard] directly to
-     * [API_REGISTER_URL] without a proxy. On a 2xx response the body is handed
-     * to [saveIdentity] so the core finds the file on the next connect.
+     * Delegates to [IdentityRelayClient.provision], the same full ladder the
+     * automatic path uses: relay Workers when they are configured, then the
+     * direct API across its host routes (api.devices.cloudflare.com, pinned
+     * edges). The old copy POSTed a keyless registration body straight to
+     * api.cloudflareclient.com and gave the response to a saveIdentity that
+     * always returned null — doubly dead.
      *
      * Must be called on a worker thread — it blocks on the network.
-     * Logs to both [Log] and [ConnectionLog] so the vault terminal can surface
-     * the result.
-     *
-     * @return true when an identity was saved.
      */
     fun provisionDirect(context: Context, protocol: String): Boolean {
         Log.i(TAG, "Identity Vault: provisioning $protocol directly")
         ConnectionLog.record("Identity Vault: provisioning $protocol directly")
-        val body = JSONObject().apply {
-            put("install_id", "")
-            put("fcm_token", "")
-            put("tos", nowIso())
-            put("model", android.os.Build.MODEL)
-            put("serial_number", android.os.Build.SERIAL ?: "unknown")
-            put("locale", java.util.Locale.getDefault().toString())
-            put("key_type", "curve25519")
-            put("tunnel_type", "wireguard")
-        }
         return try {
-            val connection = URL(API_REGISTER_URL).openConnection() as HttpURLConnection
-            connection.connectTimeout = 20_000
-            connection.readTimeout = 20_000
-            connection.requestMethod = "POST"
-            connection.setRequestProperty("Content-Type", "application/json")
-            connection.setRequestProperty("User-Agent", USER_AGENT)
-            connection.setRequestProperty("CF-Client-Version", CLIENT_VERSION)
-            connection.doOutput = true
-            connection.outputStream.use { it.write(body.toString().toByteArray()) }
-            val code = connection.responseCode
-            if (code !in 200..299) {
-                Log.w(TAG, "Identity Vault: direct registration for $protocol returned HTTP $code")
-                ConnectionLog.record("Identity Vault: direct registration for $protocol returned HTTP $code")
-                return false
-            }
-            val response = connection.inputStream.bufferedReader().readText()
-            val parsed = JSONObject(response)
-            val file = saveIdentity(context, protocol, parsed)
-            val ok = file != null
-            if (ok) {
-                Log.i(TAG, "Identity Vault: $protocol provisioned directly -> ${file!!.name}")
+            val outcome = IdentityRelayClient.provision(context, protocol)
+            if (outcome.success) {
+                Log.i(TAG, "Identity Vault: $protocol provisioned directly -> identity stored")
                 ConnectionLog.record("Identity Vault: $protocol provisioned directly")
             } else {
-                Log.w(TAG, "Identity Vault: direct registration for $protocol saved no identity")
-                ConnectionLog.record("Identity Vault: direct registration for $protocol saved no identity")
+                Log.w(TAG, "Identity Vault: direct provision for $protocol failed — ${outcome.error}")
+                ConnectionLog.record("Identity Vault: direct provision for $protocol failed — ${outcome.error}")
             }
-            ok
+            outcome.success
         } catch (e: Exception) {
             Log.w(TAG, "Identity Vault: direct provision for $protocol failed: ${e.message}")
             ConnectionLog.record("Identity Vault: direct provision for $protocol failed — ${e.message}")
@@ -510,23 +486,6 @@ object IdentityProvisioner {
             }
         }
         return success
-    }
-
-    /**
-     * Write the identity in the TOML shape [config] expects.
-     *
-     * The core's [PersistedIdentity] is a flat table, not the nested `[peer]` /
-     * `[account]` layout this used to emit. Drifting from it would have made the
-     * file parse cleanly into an identity with empty credentials — the core
-     * would load it, find nothing to handshake with, and register again,
-     * silently undoing everything this class just did.
-     */
-    private fun saveIdentity(context: Context, protocol: String, response: JSONObject): File? {
-        // These legacy callers do not retain a device-generated X25519 key or
-        // enroll MASQUE certificates. A registration response alone cannot be
-        // persisted as a usable identity; never create a misleading TOML file.
-        Log.w(TAG, "legacy $protocol registration cannot save a complete identity")
-        return null
     }
 
     fun relayToml(response: JSONObject, privateKey: ByteArray, cert: String, key: String, issued: Long): String? {
@@ -596,10 +555,6 @@ object IdentityProvisioner {
             return false
         } finally { staged.forEach { (_, temp) -> temp.delete() } }
     }
-
-    private fun nowIso(): String =
-        java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", java.util.Locale.US)
-            .format(java.util.Date())
 
     private const val API_REGISTER_URL = "https://api.cloudflareclient.com/v0a4471/reg"
     private const val USER_AGENT = "okhttp/3.12.1"

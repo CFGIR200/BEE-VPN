@@ -145,6 +145,9 @@ object TunnelController {
 
     fun connect() {
         userDisconnect = false
+        // A human pressing the dial is a fresh start — the ladder belongs to
+        // the auto-reconnect cycle, not to the user's own action.
+        reconnectAttempts.set(0)
         scope.launch { mutex.withLock { withContext(Dispatchers.IO) { connectBlocking() } } }
     }
 
@@ -174,6 +177,14 @@ object TunnelController {
             state == State.PROVISIONING || state == State.VERIFYING
         ) return
         lastError = null
+
+        // Android clears the cached gateway after two failed attempts — here
+        // that is the engine's lastconn quick-reconnect ring: a cached edge
+        // that stopped answering must be evicted, not re-verified forever.
+        if (reconnectAttempts.get() >= 2) {
+            AetherEngine.clearQuickReconnectCache()
+            TunnelVerifier.log("reconnect #${reconnectAttempts.get()} — lastconn cache evicted, the engine scans fresh")
+        }
 
         // Android parity — MsnGuardVpnService refuses to bring up a tunnel
         // when the entitlement is gone: "Subscription inactive — renew".
@@ -208,11 +219,31 @@ object TunnelController {
             val ipv6 = withContext(Dispatchers.IO) { TunnelVerifier.ipv6Available() }
             val exit = resolveExit()
             if (exit == null) return   // resolveExit already failed with a message
-            val verdict = when (exit) {
+            var verdict = when (exit) {
                 is Exit.Aether -> bringUpAether(exit.protocol, cores, baseline, ipv6)
                 is Exit.Node -> bringUpShardNode(exit.profile, cores, baseline, ipv6)
                 is Exit.Anytls -> bringUpAnytls(exit.profile, cores, baseline, ipv6)
                 is Exit.Manual -> bringUpManualWarp(exit.identity, cores, baseline, ipv6)
+            }
+
+            // Android's Auto-Scan escalation, one rung per connect: the phone
+            // walks WireGuard → MASQUE on a first connect because a UDP-blocked
+            // carrier kills WG every time while MASQUE (HTTP/2 over TCP) still
+            // rides — and AUTO that resolved to a dead race winner falls back
+            // to the engine. Each escalation re-verifies with the SAME honest
+            // checks; a tunnel only earns «متصل است» from real bytes.
+            val rungQueue = ArrayDeque<AetherEngine.Protocol>()
+            when (exit) {
+                is Exit.Node, is Exit.Anytls -> { rungQueue.add(AetherEngine.Protocol.WG); rungQueue.add(AetherEngine.Protocol.MASQUE) }
+                is Exit.Aether -> if (exit.protocol == AetherEngine.Protocol.WG) rungQueue.add(AetherEngine.Protocol.MASQUE)
+                is Exit.Manual -> {}
+            }
+            while (verdict.message != null && mode == Mode.AUTO && rungQueue.isNotEmpty()) {
+                val rung = rungQueue.removeFirst()
+                TunnelVerifier.log("verification failed — escalating the Auto-Scan ladder to ${rung.id} (Android AUTO parity)")
+                killEnginesQuiet()
+                setState(State.PROVISIONING, if (rung == AetherEngine.Protocol.WG) "نود پاسخ نداد — تلاش با موتور WARP…" else "حالت دوم: تلاش با MASQUE…")
+                verdict = bringUpAether(rung, cores, baseline, ipv6)
             }
 
             if (verdict.message != null) {
@@ -222,7 +253,6 @@ object TunnelController {
 
             connectedSince = System.currentTimeMillis() / 1000
             lastExitSummary = exitSummary
-            reconnectAttempts.set(0)   // a verified connect resets the ladder
             setState(State.CONNECTED, "متصل است — $exitSummary")
             startWatchdog()
         } catch (e: Exception) {
@@ -241,7 +271,8 @@ object TunnelController {
         ipv6: Boolean,
     ): Verdict {
         setState(State.PROVISIONING, "هویت WARP…")
-        if (!ensureAetherIdentity(protocol, cores)) return Verdict(null)
+        val identityFailure = ensureAetherIdentity(protocol, cores)
+        if (identityFailure != null) return Verdict(identityFailure)
 
         setState(State.STARTING, "راه‌اندازی موتور اندروید (aether)…")
         val exe = AetherEngine.exe(cores)
@@ -262,8 +293,14 @@ object TunnelController {
         }
         proc.start()
         aether = proc
-        if (!EngineProcess.awaitPort(AetherEngine.SOCKS_PORT, 110_000) { proc.isAlive }) {
-            return Verdict("موتور aether روی پورت ${AetherEngine.SOCKS_PORT} بالا نیامد (بودجهٔ ۱۱۰ ثانیه مثل اندروید تمام شد) — گزارش پیشرفته را ببین")
+        // The per-protocol budget Android's waitForSocksReadyBudget enforces:
+        // WG 110 s / MASQUE+MiM 300 s / gool 200 s. A cold start over a
+        // filtered link legitimately needs scan (≤120 s) + registration
+        // retries before the listener opens — killing the run earlier just
+        // restarts the whole cost, which was the 110-second reconnect loop.
+        val socksBudgetMs = AetherEngine.socksReadyBudgetMs(protocol)
+        if (!EngineProcess.awaitPort(AetherEngine.SOCKS_PORT, socksBudgetMs) { proc.isAlive }) {
+            return Verdict("موتور aether روی پورت ${AetherEngine.SOCKS_PORT} بالا نیامد (بودجهٔ ${faNum((socksBudgetMs / 1000).toInt())} ثانیه، مثل اندروید) — گزارش پیشرفته را ببین")
         }
         TunnelVerifier.log("aether SOCKS up on ${AetherEngine.SOCKS_PORT} (${protocol.id})")
 
@@ -311,20 +348,24 @@ object TunnelController {
     /// call the phone's WarpIdentityFetcher makes). Registration is
     /// idempotent: a complete identity file is never touched, so warm
     /// identities reconnect through the lastconn ring at full speed.
-    private suspend fun ensureAetherIdentity(protocol: AetherEngine.Protocol, cores: File): Boolean {
-        if (AetherEngine.identitiesReady(protocol)) return true
+    ///
+    /// Returns null when the identity is ready, else the Persian failure —
+    /// the message flows back as the connect's Verdict so a provisioning
+    /// failure can NEVER fall through to a fake «متصل است».
+    private suspend fun ensureAetherIdentity(protocol: AetherEngine.Protocol, cores: File): String? {
+        if (AetherEngine.identitiesReady(protocol)) return null
 
         if (protocol == AetherEngine.Protocol.WG) {
             setState(State.PROVISIONING, "ثبت‌نام WARP…")
             val saved = WarpProvisioner.saved()
             if (saved != null && saved.clientIdB64.isNotBlank()) {
                 AetherEngine.writeWgIdentity(saved)
-                if (AetherEngine.identitiesReady(protocol)) return true
+                if (AetherEngine.identitiesReady(protocol)) return null
             }
             try {
                 val fresh = WarpProvisioner.register(null)
                 AetherEngine.writeWgIdentity(fresh)
-                if (AetherEngine.identitiesReady(protocol)) return true
+                if (AetherEngine.identitiesReady(protocol)) return null
             } catch (e: Exception) {
                 TunnelVerifier.log("direct WARP registration failed: ${e.message} — trying the engine's ECH register")
             }
@@ -334,17 +375,14 @@ object TunnelController {
         val ok = AetherEngine.registerIfNeeded(protocol, cores) { line ->
             EngineProcess.logLine("[aether-register] $line")
         }
-        if (ok) return true
+        if (ok) return null
 
-        fail(
-            "هویت " + when (protocol) {
-                AetherEngine.Protocol.WG -> "WARP"
-                AetherEngine.Protocol.MASQUE -> "MASQUE"
-                AetherEngine.Protocol.GOOL -> "گول (WARP روی WARP)"
-                AetherEngine.Protocol.MIM -> "ماسک روی ماسک"
-            } + " ساخته نشد — اینترنت را بررسی کن یا به حالت SHARD برو؛ در تب پیشرفته هم می‌توانی کانفیگ دستی بگذاری"
-        )
-        return false
+        return "هویت " + when (protocol) {
+            AetherEngine.Protocol.WG -> "WARP"
+            AetherEngine.Protocol.MASQUE -> "MASQUE"
+            AetherEngine.Protocol.GOOL -> "گول (WARP روی WARP)"
+            AetherEngine.Protocol.MIM -> "ماسک روی ماسک"
+        } + " ساخته نشد — اینترنت را بررسی کن یا به حالت SHARD برو؛ در تب پیشرفته هم می‌توانی کانفیگ دستی بگذاری"
     }
 
     // ------------------------------------------------------------- shard
@@ -595,11 +633,17 @@ object TunnelController {
 
         // 2) engine end-to-end: bytes through SOCKS 1819 reach the far end.
         //    In aether modes this probes the CORE's listener — the same
-        //    waitForSocksReady the phone runs against its engine.
+        //    waitForSocksReady the phone runs against its engine. Two shapes:
+        //    the cloudflare trace, then a generate_204 — some blackholes drop
+        //    one far end but carry the other, and a tunnel that moves bytes
+        //    must not be declared dead because one host was unlucky.
         var exitIp: String? = null
         repeat(2) {
             if (exitIp != null) return@repeat
             exitIp = TunnelVerifier.traceIpViaSocks(AetherEngine.SOCKS_PORT, 15_000)
+            if (exitIp == null && TunnelVerifier.tunnel204ViaSocks(AetherEngine.SOCKS_PORT, 15_000)) {
+                exitIp = "/live"
+            }
         }
         if (exitIp == null) {
             TunnelVerifier.log("engine egress: DEAD (no trace answer through SOCKS)")
@@ -645,7 +689,10 @@ object TunnelController {
                     (xray?.isAlive == true) &&
                         (aether?.let { it.isAlive } != false) &&
                         EngineProcess.portOpen(AetherEngine.SOCKS_PORT) &&
-                        TunnelVerifier.traceIpViaSocks(AetherEngine.SOCKS_PORT, 10_000) != null
+                        (
+                            TunnelVerifier.traceIpViaSocks(AetherEngine.SOCKS_PORT, 10_000) != null ||
+                                TunnelVerifier.tunnel204ViaSocks(AetherEngine.SOCKS_PORT, 10_000)
+                            )
                 }
                 if (alive) {
                     strikes = 0
@@ -662,11 +709,17 @@ object TunnelController {
     }
 
     /// Android's scheduleAutoReconnect: backoff 5/15/30/60/120 s, suppressed
-    /// when the user themselves pressed disconnect, ladder reset on a
-    /// verified connect (see connectBlocking).
+    /// when the user themselves pressed disconnect.
+    ///
+    /// The ladder restarts at 5 s ONLY when the dying session actually lived
+    /// (≥ 5 minutes of real use): a tunnel that drops soon after every
+    /// reconnect must escalate 5→15→30→60→120, or a sick network pins the app
+    /// in a permanent 5-second retry loop — the exact «اتصال مجدد خودکار در
+    /// ۵ ثانیه» loop reported from the field.
     private fun scheduleAutoReconnect(reason: String) {
         if (userDisconnect) return
         watchdogJob?.cancel()
+        val sessionUptimeS = if (connectedSince > 0) System.currentTimeMillis() / 1000 - connectedSince else 0
         val attempt = reconnectAttempts.getAndIncrement()
         val ladder = TunnelVerifier.RECONNECT_BACKOFF_S
         val wait = ladder[attempt.coerceAtMost(ladder.size - 1)]
@@ -675,6 +728,7 @@ object TunnelController {
             mutex.withLock {
                 if (userDisconnect) return@withLock
                 withContext(Dispatchers.IO) { stopEngines(null) }
+                if (sessionUptimeS >= 300) reconnectAttempts.set(0)
                 setState(State.PROVISIONING, "$reason — اتصال مجدد خودکار تا ${faNum(wait)} ثانیه…")
                 delay(wait * 1000L)
                 if (!userDisconnect) withContext(Dispatchers.IO) { connectBlocking() }

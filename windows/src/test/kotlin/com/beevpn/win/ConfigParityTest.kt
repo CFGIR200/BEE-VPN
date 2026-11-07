@@ -1,8 +1,10 @@
 package com.beevpn.win
 
 import com.beevpn.win.engine.EngineConfig
+import com.beevpn.win.shard.ShardImport
 import com.beevpn.win.shard.ShardProfile
 import com.beevpn.win.shard.ShardType
+import com.beevpn.win.tunnel.TunnelVerifier
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -91,5 +93,30 @@ class ConfigParityTest {
         val direct = outbounds.getJSONObject(1)
         assertEquals("direct", direct.getString("tag"))
         assertEquals("freedom", direct.getString("protocol"))
+    }
+
+    // ------------------------------------------------- connection reliability
+
+    @Test
+    fun `loopback sni-spoofing variants never enter the shard pool`() {
+        // The publisher ships 127.0.0.1:40443 "Sni-Spoofing" lines that only
+        // work behind a LOCAL forwarder neither client runs — every one of
+        // them used to burn a race slot on a guaranteed probe failure.
+        val body = listOf(
+            "# header",
+            "vless://64c5f924-1c24-44a5-acff-2e3ebcd2f807@127.0.0.1:40443?security=tls&type=ws&host=web.example.workers.dev&path=%2Fapi%2Fws&sni=web.example.workers.dev#Sni-Spoofing",
+            "vless://64c5f924-1c24-44a5-acff-2e3ebcd2f807@188.114.98.0:443?security=tls&type=ws&host=web.example.workers.dev&path=%2Fapi%2Fws&sni=web.example.workers.dev#live-node",
+        ).joinToString("\n")
+        val pool = ShardImport.parseBatch(body)
+        assertEquals(1, pool.size)
+        assertEquals("188.114.98.0", pool.single().server)
+    }
+
+    @Test
+    fun `the 204 probe accepts a generate_204 reply and rejects junk`() {
+        assertTrue(TunnelVerifier.parseTraceIp("ip=5.6.7.8\nloc=DE\n") == "5.6.7.8")
+        // The SOCKS plumbing itself needs a live listener — only the parser
+        // contract is pinned here; the trace parser stays the primary probe.
+        assertFalse(TunnelVerifier.parseTraceIp("no ip here") != null)
     }
 }

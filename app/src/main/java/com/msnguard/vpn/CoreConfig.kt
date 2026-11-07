@@ -33,11 +33,12 @@ object CoreConfig {
      * that can be up at the same time. The internal block is contiguous:
      * [SOCKS_PORT] 1819, [CHAIN_SOCKS_PORT] 1820, 1822/1823 Tor, 1824 xray under
      * SHARD, 1825 [ShardSocksFront], 1826 the anytls sidecar, 1827
-     * [WarpUdpgwFront]. That leaves 1828 as the next free slot, and it is safe
-     * because this front only ever runs on the Hev/Zeptun WARP path, where none
-     * of those are bound.
+     * [WarpUdpgwFront]. 1828 is the next free slot — this front USED to sit on
+     * 1827, sharing it with [WarpUdpgwFront]; a leaked front from a previous
+     * session made the second bind lose silently and the tunnel then connected
+     * but carried nothing. Each front now owns its port.
      */
-    const val SMART_DNS_FRONT_PORT = 1827
+    const val SMART_DNS_FRONT_PORT = 1828
 
     /**
      * The virtual resolver advertised on the TUN when the user has encrypted DNS
@@ -1200,7 +1201,7 @@ object CoreConfig {
      * 211xx/212xx blocks are the SHARD race's probe listeners. 7300 is udpgw,
      * and [HTTP_PROXY_PORT] is the LAN HTTP listener.
      */
-    private val RESERVED_PORTS = setOf(CHAIN_SOCKS_PORT, 1822, 1823, 1824, 1825, 1826, 1827, SMART_DNS_FRONT_PORT, 7300, HTTP_PROXY_PORT)
+    private val RESERVED_PORTS = setOf(CHAIN_SOCKS_PORT, 1822, 1823, 1824, 1825, 1826, 1827, 1828, SMART_DNS_FRONT_PORT, 7300, HTTP_PROXY_PORT)
 
     /** The stored tunnel mode, defaulting to VPN. */
     fun tunnelMode(context: Context): String =

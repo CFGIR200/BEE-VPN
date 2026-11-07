@@ -51,6 +51,21 @@ object AetherEngine {
     const val MTU_MASQUE = 1304
     const val MTU_WOW = 1280
 
+    /// How long the app waits for the engine's SOCKS listener before giving up
+    /// on one connect — Android's waitForSocksReadyBudget (MsnGuardVpnService):
+    /// WireGuard 110 s / MASQUE+MiM 300 s / gool 200 s.
+    ///
+    /// This is THE fix for the “kill and reconnect every 110 s” loop: on a cold
+    /// start over a filtered link the engine legitimately needs scan (up to
+    /// 120 s balanced) + registration retries (up to ~100 s) before it even
+    /// opens the listener — a 110 s budget kills a perfectly healthy
+    /// provisioning run and pays the whole cost again, forever.
+    fun socksReadyBudgetMs(protocol: Protocol): Long = when (protocol) {
+        Protocol.WG -> 110_000L
+        Protocol.MASQUE, Protocol.MIM -> 300_000L
+        Protocol.GOOL -> 200_000L
+    }
+
     enum class Protocol(val id: String, val register: String) {
         WG("wg", "wg"),
         MASQUE("masque", "masque"),
@@ -155,7 +170,11 @@ object AetherEngine {
         env["AETHER_SOCKS"] = "127.0.0.1:$SOCKS_PORT"
         env["AETHER_LOG_LEVEL"] = "info"
         env["AETHER_STATS"] = "1"
-        env["AETHER_STATS_SECS"] = "86400"
+        // 60 s instead of the phone's 86400: the desktop has no FFI stats
+        // snapshot, so the periodic “[=] up … down … uptime …” log line is the
+        // only heartbeat the advanced report ever sees — and it is exactly what
+        // proves whether a dead tunnel stopped carrying bytes.
+        env["AETHER_STATS_SECS"] = "60"
         env["AETHER_SCAN"] = "balanced"
         // Android: ip_scan "v4" hardwired for masque/mim, pref "both" otherwise.
         if (masqueFamily) env["AETHER_IP"] = "v4"
@@ -248,6 +267,17 @@ object AetherEngine {
 
     /// The executable inside the bundled cores (or a user-provided one).
     fun exe(cores: File): File? = File(cores, "aether.exe").takeIf { it.isFile }
+
+    /// The lastconn quick-reconnect ring — <config>-lastconn beside every
+    /// identity file. After two failed connects the app must evict it (Android
+    /// clears the gateway cache at reconnectAttempts >= 2): a cached edge that
+    /// stopped answering would otherwise be re-verified on every retry before
+    /// the engine finally scans.
+    fun clearQuickReconnectCache() {
+        val dir = AppPaths.baseDir
+        val files = dir.listFiles { f -> f.isFile && f.name.endsWith("-lastconn") } ?: emptyArray()
+        files.forEach { runCatching { it.delete() } }
+    }
 }
 
 /// Logging helper mirroring the engine log the rest of the app writes.

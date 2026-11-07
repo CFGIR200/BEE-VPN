@@ -86,7 +86,137 @@ object IdentityRelayClient {
         ApiRoute(API_LEGACY, API_LEGACY),
     ) + API_EDGES.map { ApiRoute(it, API_PRIMARY) }
 
-    private data class Hop(val response: JSONObject, val wgPrivate: ByteArray, val cert: String, val key: String, val issued: Long)
+    internal data class Hop(val response: JSONObject, val wgPrivate: ByteArray, val cert: String, val key: String, val issued: Long)
+
+    /** A transport-agnostic registration call: POST/PATCH with an optional bearer token. */
+    internal fun interface ApiCall {
+        fun call(method: String, path: String, body: String, token: String?): JSONObject
+    }
+
+    /**
+     * The complete enrollment flow, on ANY transport.
+     *
+     *   1. a device-generated X25519 keypair whose PUBLIC half rides the
+     *      request body ("key") — a registration without it is refused;
+     *   2. POST /reg → id + token;
+     *   3. PATCH warp_enabled=true (a fresh account can handshake but carries
+     *      no traffic until this is set);
+     *   4. for MASQUE identities, a locally generated secp256r1 certificate
+     *      pair PATCHed onto the account.
+     *
+     * Used by the relay ladder, the direct-API ladder, and — since 1.4.0 —
+     * by the SHARD-backed provisioning path (IdentityProvisioner), which
+     * previously POSTed a keyless body and then threw the response away.
+     */
+    internal fun enrollVia(call: ApiCall, masque: Boolean): Hop {
+        val wgKey = X25519PrivateKeyParameters(SecureRandom())
+        val wgPublic = ByteArray(32).also { wgKey.generatePublicKey().encode(it, 0) }
+        val privateBytes = ByteArray(32).also { wgKey.encode(it, 0) }
+        val body = JSONObject().apply {
+            put("key", Base64.encodeToString(wgPublic, Base64.NO_WRAP))
+            put("install_id", "")
+            put("fcm_token", "")
+            put("tos", java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", java.util.Locale.US).format(Date()))
+            put("model", android.os.Build.MODEL)
+            put("serial_number", "")
+            put("os_version", "")
+            put("key_type", "curve25519")
+            put("tunnel_type", "wireguard")
+            put("locale", java.util.Locale.getDefault().toString())
+        }.toString()
+        val account = call.call("POST", REGISTER_PATH, body, null)
+        val deviceId = account.optString("id").takeIf { it.matches(Regex("[A-Za-z0-9_-]+")) }
+            ?: error("invalid device id")
+        val token = account.optString("token").takeIf { it.isNotEmpty() } ?: error("missing token")
+        // A newly registered WARP account can handshake without carrying traffic
+        // until warp_enabled is set. MASQUE needs its own authenticated key PATCH.
+        if (!account.optBoolean("warp_enabled", false)) {
+            val enabled = call.call("PATCH", ENROLL_PATH_PREFIX + deviceId,
+                JSONObject().put("warp_enabled", true).toString(), token)
+            if (!enabled.optBoolean("warp_enabled", false)) error("WARP was not enabled")
+        }
+        if (!masque) return Hop(account, privateBytes, "", "", 0)
+        val pair = KeyPairGenerator.getInstance("EC").apply {
+            initialize(java.security.spec.ECGenParameterSpec("secp256r1"), SecureRandom())
+        }.generateKeyPair()
+        val issued = System.currentTimeMillis() / 1000
+        val name = X500Name("CN=$deviceId")
+        val builder = JcaX509v3CertificateBuilder(name, BigInteger(128, SecureRandom()),
+            Date((issued - 60) * 1000), Date((issued + 365L * 86400) * 1000), name, pair.public)
+        val signer = JcaContentSignerBuilder("SHA256withECDSA").build(pair.private)
+        val certificate = JcaX509CertificateConverter().getCertificate(builder.build(signer))
+        val update = JSONObject().apply {
+            put("key", Base64.encodeToString(pair.public.encoded, Base64.NO_WRAP))
+            put("key_type", KEY_TYPE_MASQUE)
+            put("tunnel_type", TUNNEL_TYPE_MASQUE)
+        }.toString()
+        call.call("PATCH", ENROLL_PATH_PREFIX + deviceId, update, token)
+        return Hop(account, privateBytes, pem(certificate), privatePem(pair.private.encoded), issued)
+    }
+
+    /**
+     * The full enrollment over a SOCKS5 listener (the SHARD-backed path).
+     * Host ladder inside: api.devices.cloudflare.com first, then
+     * api.cloudflareclient.com — the node resolves remotely, but a locally
+     * poisoned name must not stop the attempt.
+     */
+    internal fun enrollThroughSocks(socks: java.net.Proxy, masque: Boolean): Hop {
+        var last: Exception? = null
+        for (host in SOCKS_API_HOSTS) {
+            try {
+                return enrollVia({ method, path, body, token ->
+                    socksRequest(socks, host, method, path, body, token)
+                }, masque)
+            } catch (e: Exception) {
+                last = e
+            }
+        }
+        error(last?.message ?: "registration through SHARD failed")
+    }
+
+    private val SOCKS_API_HOSTS = listOf("api.devices.cloudflare.com", "api.cloudflareclient.com")
+
+    private fun socksRequest(socks: java.net.Proxy, host: String, method: String, path: String, body: String, token: String?): JSONObject {
+        repeat(2) { attempt ->
+            val connection = URL("https://$host$path").openConnection(socks) as HttpURLConnection
+            try {
+                connection.connectTimeout = DIRECT_API_TIMEOUT_MS
+                connection.readTimeout = DIRECT_API_TIMEOUT_MS
+                connection.requestMethod = method
+                connection.doOutput = true
+                connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                connection.setRequestProperty("Accept", "application/json")
+                connection.setRequestProperty("User-Agent", "WARP for Android")
+                connection.setRequestProperty("CF-Client-Version", "a-6.35-4471")
+                if (token != null) connection.setRequestProperty("Authorization", "Bearer $token")
+                connection.outputStream.use { it.write(body.toByteArray(StandardCharsets.UTF_8)) }
+                val code = connection.responseCode
+                if (code in 200..299) {
+                    return JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+                }
+                if ((code == 429 || code >= 500) && attempt == 0) {
+                    val retrySeconds = connection.getHeaderField("Retry-After")?.toLongOrNull()
+                        ?.coerceAtMost(30) ?: 1L
+                    Thread.sleep(retrySeconds * 1000L)
+                    return@repeat
+                }
+                error("registration HTTP $code")
+            } finally { connection.disconnect() }
+        }
+        error("registration retry exhausted")
+ }
+
+    private fun enroll(context: Context, endpoint: String, masque: Boolean): Hop {
+        return enrollVia({ method, path, body, token ->
+            request(endpoint, method, path, body, token)
+        }, masque)
+    }
+
+    private fun enrollDirect(context: Context, masque: Boolean): Hop {
+        return enrollVia({ method, path, body, token ->
+            apiRequest(method, path, body, token)
+        }, masque)
+    }
 
     fun provision(context: Context, protocol: String, cancelled: () -> Boolean = { false }): Outcome {
         val names = when (protocol.lowercase()) {
@@ -144,96 +274,6 @@ object IdentityRelayClient {
         if (cancelled()) return Outcome(false, "cancelled")
         return if (IdentityProvisioner.installRelayedFiles(prepared)) Outcome(true, "identity stored")
         else Outcome(false, "could not store identity")
-    }
-
-    private fun enroll(context: Context, endpoint: String, masque: Boolean): Hop {
-        val wgKey = X25519PrivateKeyParameters(SecureRandom())
-        val wgPublic = ByteArray(32).also { wgKey.generatePublicKey().encode(it, 0) }
-        val privateBytes = ByteArray(32).also { wgKey.encode(it, 0) }
-        val body = JSONObject().apply {
-            put("key", Base64.encodeToString(wgPublic, Base64.NO_WRAP))
-            put("install_id", installId(context))
-            put("fcm_token", "")
-            put("tos", java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", java.util.Locale.US).format(Date()))
-            put("model", android.os.Build.MODEL)
-            put("serial_number", installId(context))
-            put("os_version", "")
-            put("key_type", "curve25519")
-            put("tunnel_type", "wireguard")
-            put("locale", java.util.Locale.getDefault().toString())
-        }.toString()
-        val account = request(endpoint, "POST", REGISTER_PATH, body, null)
-        val deviceId = account.optString("id").takeIf { it.matches(Regex("[A-Za-z0-9_-]+")) }
-            ?: error("invalid device id")
-        val token = account.optString("token").takeIf { it.isNotEmpty() } ?: error("missing token")
-        // A newly registered WARP account can handshake without carrying traffic
-        // until warp_enabled is set. MASQUE needs its own authenticated key PATCH.
-        if (!account.optBoolean("warp_enabled", false)) {
-            val enabled = request(endpoint, "PATCH", ENROLL_PATH_PREFIX + deviceId,
-                JSONObject().put("warp_enabled", true).toString(), token)
-            if (!enabled.optBoolean("warp_enabled", false)) error("WARP was not enabled")
-        }
-        if (!masque) return Hop(account, privateBytes, "", "", 0)
-        val pair = KeyPairGenerator.getInstance("EC").apply {
-            initialize(java.security.spec.ECGenParameterSpec("secp256r1"), SecureRandom())
-        }.generateKeyPair()
-        val issued = System.currentTimeMillis() / 1000
-        val name = X500Name("CN=$deviceId")
-        val builder = JcaX509v3CertificateBuilder(name, BigInteger(128, SecureRandom()),
-            Date((issued - 60) * 1000), Date((issued + 365L * 86400) * 1000), name, pair.public)
-        val signer = JcaContentSignerBuilder("SHA256withECDSA").build(pair.private)
-        val certificate = JcaX509CertificateConverter().getCertificate(builder.build(signer))
-        val update = JSONObject().apply {
-            put("key", Base64.encodeToString(pair.public.encoded, Base64.NO_WRAP))
-            put("key_type", "${KEY_TYPE_MASQUE}")
-            put("tunnel_type", "${TUNNEL_TYPE_MASQUE}")
-        }.toString()
-        request(endpoint, "PATCH", ENROLL_PATH_PREFIX + deviceId, update, token)
-        return Hop(account, privateBytes, pem(certificate), privatePem(pair.private.encoded), issued)
-    }
-
-    private fun enrollDirect(context: Context, masque: Boolean): Hop {
-        val wgKey = X25519PrivateKeyParameters(SecureRandom())
-        val wgPublic = ByteArray(32).also { wgKey.generatePublicKey().encode(it, 0) }
-        val privateBytes = ByteArray(32).also { wgKey.encode(it, 0) }
-        val body = JSONObject().apply {
-            put("key", Base64.encodeToString(wgPublic, Base64.NO_WRAP))
-            put("install_id", installId(context))
-            put("fcm_token", "")
-            put("tos", java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", java.util.Locale.US).format(Date()))
-            put("model", android.os.Build.MODEL)
-            put("serial_number", installId(context))
-            put("os_version", "")
-            put("key_type", "curve25519")
-            put("tunnel_type", "wireguard")
-            put("locale", java.util.Locale.getDefault().toString())
-        }.toString()
-        val account = apiRequest("POST", REGISTER_PATH, body, null)
-        val deviceId = account.optString("id").takeIf { it.matches(Regex("[A-Za-z0-9_-]+")) }
-            ?: error("invalid device id")
-        val token = account.optString("token").takeIf { it.isNotEmpty() } ?: error("missing token")
-        if (!account.optBoolean("warp_enabled", false)) {
-            val enabled = apiRequest("PATCH", ENROLL_PATH_PREFIX + deviceId,
-                JSONObject().put("warp_enabled", true).toString(), token)
-            if (!enabled.optBoolean("warp_enabled", false)) error("WARP was not enabled")
-        }
-        if (!masque) return Hop(account, privateBytes, "", "", 0)
-        val pair = KeyPairGenerator.getInstance("EC").apply {
-            initialize(java.security.spec.ECGenParameterSpec("secp256r1"), SecureRandom())
-        }.generateKeyPair()
-        val issued = System.currentTimeMillis() / 1000
-        val name = X500Name("CN=$deviceId")
-        val builder = JcaX509v3CertificateBuilder(name, BigInteger(128, SecureRandom()),
-            Date((issued - 60) * 1000), Date((issued + 365L * 86400) * 1000), name, pair.public)
-        val signer = JcaContentSignerBuilder("SHA256withECDSA").build(pair.private)
-        val certificate = JcaX509CertificateConverter().getCertificate(builder.build(signer))
-        val update = JSONObject().apply {
-            put("key", Base64.encodeToString(pair.public.encoded, Base64.NO_WRAP))
-            put("key_type", KEY_TYPE_MASQUE)
-            put("tunnel_type", TUNNEL_TYPE_MASQUE)
-        }.toString()
-        apiRequest("PATCH", ENROLL_PATH_PREFIX + deviceId, update, token)
-        return Hop(account, privateBytes, pem(certificate), privatePem(pair.private.encoded), issued)
     }
 
     private fun apiRequest(method: String, path: String, body: String, token: String?): JSONObject {

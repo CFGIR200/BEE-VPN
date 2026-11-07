@@ -46,9 +46,21 @@ class AetherEngineTest {
         assertEquals(AetherEngine.EMBEDDED_API_ECH, env["AETHER_API_ECH"])
         assertEquals("1", env["AETHER_QUICK_RECONNECT"])
         assertEquals("1", env["AETHER_STATS"])
-        assertEquals("86400", env["AETHER_STATS_SECS"])
+        // 60 s: the desktop heartbeat — the periodic “up/down/uptime” line is
+        // the only stats surface a Windows report has (no FFI snapshot).
+        assertEquals("60", env["AETHER_STATS_SECS"])
         assertFalse(env.containsKey("AETHER_GOOL_MODE"))
         assertFalse(env.containsKey("AETHER_MASQUE_HTTP2"))
+    }
+
+    @Test
+    fun `socks-ready budget follows the android waitForSocksReadyBudget ladder`() {
+        // The 110-seconds-everywhere budget was the reconnect loop: a cold
+        // MASQUE start legitimately needs scan + registration > 110 s.
+        assertEquals(110_000L, AetherEngine.socksReadyBudgetMs(AetherEngine.Protocol.WG))
+        assertEquals(300_000L, AetherEngine.socksReadyBudgetMs(AetherEngine.Protocol.MASQUE))
+        assertEquals(300_000L, AetherEngine.socksReadyBudgetMs(AetherEngine.Protocol.MIM))
+        assertEquals(200_000L, AetherEngine.socksReadyBudgetMs(AetherEngine.Protocol.GOOL))
     }
 
     @Test

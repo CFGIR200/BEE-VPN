@@ -421,6 +421,21 @@ class MsnGuardVpnService : VpnService(), NativeCore.CoreCallback, PsiphonTunnel.
     /** Consecutive auto-reconnect attempts since the last verified connect. */
     private var reconnectAttempts = 0
 
+    /**
+     * When the CURRENT session was armed by [startWatchdog] — i.e. when this
+     * session reached its connect point. [scheduleAutoReconnect] uses it to
+     * tell a session that actually lived (≥ [SESSION_STABLE_MS]) from one that
+     * died young: only a long-lived session resets the backoff ladder to its
+     * first rung. Resetting on EVERY connect made a network that kills the
+     * tunnel within minutes restart the ladder at 5 s forever — the reported
+     * «اتصال مجدد خودکار در ۵ ثانیه» loop.
+     */
+    @Volatile
+    private var sessionConnectedAtMs = 0L
+
+    /** A session shorter than this is a failure, not a fresh start for the ladder. */
+    private val SESSION_STABLE_MS = 5 * 60_000L
+
     /** The pending auto-reconnect, so a user action can cancel it. */
     private var reconnectTask: java.util.concurrent.ScheduledFuture<*>? = null
 
@@ -3584,7 +3599,11 @@ ConnectionLog.record("MTU: $foxyMtu for FOXY")
      */
     private fun startWatchdog() {
         watchdogTask?.cancel(false)
-        reconnectAttempts = 0
+        // Mark THIS session's start. The ladder reset moved to
+        // [scheduleAutoReconnect]: only a session that lived SESSION_STABLE_MS
+        // earns a fresh ladder — resetting here made every young death restart
+        // the backoff at 5 s, which is the reported 5-second reconnect loop.
+        sessionConnectedAtMs = System.currentTimeMillis()
         watchdogTask = ladderScheduler.scheduleWithFixedDelay({
             try {
                 if (stopRequested.get() || userInitiatedStop.get()) return@scheduleWithFixedDelay
@@ -3608,6 +3627,16 @@ ConnectionLog.record("MTU: $foxyMtu for FOXY")
                         // so a future change to the arm order cannot regress this
                         // path silently.
                         startWarpTrafficPolling()
+                    } else if (!NativeCore.isRunning()) {
+                        // The job exited BEFORE ever opening its listener: this is
+                        // not "still provisioning" — it is a connect that already
+                        // failed. Without this branch a filtered carrier that
+                        // kills the engine mid-registration sat on «در حال اتصال»
+                        // forever: waitForSocksReady had given up, the listener
+                        // never answered, nothing scheduled a retry.
+                        socksConnectPending.set(false)
+                        ConnectionLog.record("aether job exited before its SOCKS listener opened — reconnecting")
+                        onTunnelLost("the tunnel stopped before it was ready")
                     }
                     // Whether or not it landed, do not run the dead-tunnel
                     // checks below: nothing is established yet, so tunnelIsDead()
@@ -4115,6 +4144,16 @@ ConnectionLog.record("MTU: $foxyMtu for FOXY")
         if (config == null) {
             ConnectionLog.record("Auto reconnect: no stored config; giving up")
             return
+        }
+        // The ladder only restarts at its first rung when the dying session
+        // actually lived — a tunnel that dies young after every reconnect
+        // escalates 5→15→30→60→120 instead of hammering a sick network every
+        // 5 seconds. User-initiated connects reset the counter at their own
+        // entry points (ACTION_CONNECT / quick reconnect).
+        if (sessionConnectedAtMs > 0 &&
+            System.currentTimeMillis() - sessionConnectedAtMs >= SESSION_STABLE_MS
+        ) {
+            reconnectAttempts = 0
         }
         val delay = RECONNECT_BACKOFF_S[
             reconnectAttempts.coerceAtMost(RECONNECT_BACKOFF_S.size - 1)
@@ -5390,7 +5429,10 @@ ConnectionLog.record("MTU: $foxyMtu for FOXY")
                     } else if (stopRequested.get()) {
                         if (reconnectRequested.get()) sendStatus(STATUS_CONNECTING, Strings.t("Reconnecting…")) else sendStatus(STATUS_DISCONNECTED)
                     } else { ConnectionLog.record("Native tunnel stopped unexpectedly"); if (!willAutoReconnect()) sendStatus(STATUS_FAILED, "Tunnel stopped unexpectedly") }
-                    nativeExitWasUnexpected = fbDead && fbResult != 0
+                    // Same rule as the TunEngine branch: a job that dies on its
+                    // own — refused (result != 0) or accepted-then-exited — must
+                    // reach the reconnect ladder, not a stopSelf().
+                    nativeExitWasUnexpected = fbDead
                 } else {
                     ConnectionLog.record("TunEngine ${TunEngineManager.current(this).label} → $warpListen")
                     // Deliberately NOT startWatchdog() here. aether 2.3.0's job
@@ -5467,7 +5509,15 @@ ConnectionLog.record("MTU: $foxyMtu for FOXY")
                     ConnectionLog.record("Native tunnel stopped unexpectedly")
                     if (!willAutoReconnect()) sendStatus(STATUS_FAILED, "Tunnel stopped unexpectedly")
                 }
-                nativeExitWasUnexpected = diedOnItsOwn && result != 0
+                // ANY self-death is unexpected — including the result==0 case
+                // where the accepted job exited on its own before or after the
+                // listener opened. The old `diedOnItsOwn && result != 0` read
+                // treated an accepted job that died as "expected", so the
+                // finally-ladder stopped the service and ONLY the 30 s watchdog
+                // could recover — and when the death happened before the
+                // listener ever opened, nothing recovered at all (the app sat
+                // on «در حال اتصال» until the user intervened).
+                nativeExitWasUnexpected = diedOnItsOwn
                 }
                 }
             } catch (error: Exception) {

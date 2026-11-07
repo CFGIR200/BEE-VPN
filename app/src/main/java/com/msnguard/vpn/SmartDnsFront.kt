@@ -39,7 +39,7 @@ import java.util.concurrent.atomic.AtomicLong
  * 127.0.0.1:1819, and the engine is pointed at it instead of at aether:
  *
  * ```
- *   TUN → Hev/Zeptun → SmartDnsFront:1827
+ *   TUN → Hev/Zeptun → SmartDnsFront:1828
  *      ├─ CONNECT <SMART_DNS_RESOLVER:53> → answered here (DoT/DoH lookup)
  *      ├─ CONNECT <anything else>         → relayed verbatim to aether 1819
  *      ├─ UDP ASSOCIATE, port 53          → answered here (NODATA for AAAA/HTTPS

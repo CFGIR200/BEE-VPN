@@ -58,7 +58,9 @@ object ShardSubscription {
         }
         conn.connectTimeout = CONNECT_TIMEOUT_MS
         conn.readTimeout = READ_TIMEOUT_MS
-        conn.setRequestProperty("User-Agent", "BEE-VPN-Windows/1.0")
+        // A neutral browser UA, exactly like the phone sends: the fetch must
+        // not identify itself as a VPN client to the network it rides.
+        conn.setRequestProperty("User-Agent", "Mozilla/5.0")
         val etagFile = AppPaths.shardEtag
         if (etagFile.isFile && AppPaths.shardCache.isFile) {
             conn.setRequestProperty("If-None-Match", etagFile.readText().trim())

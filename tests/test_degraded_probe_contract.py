@@ -1,4 +1,5 @@
 """The carrier-side health probe must not paint a native tunnel degraded."""
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,6 +13,9 @@ assert "showDegraded()" not in carrier_branch
 carrier_start = UI.rfind('pingFailureStreak = 0', 0, UI.find('"Health probe failed but it left over the carrier link'))
 assert carrier_start >= 0
 assert 'not counting against the session' in carrier_branch
-assert 'versionCode = 449' in BUILD
-assert 'versionName = "3.2.0"' in BUILD
-print("PASS carrier-side probe failures do not set DEGRADED; version 3.2.0")
+# The version is tag-driven (CI rewrites these lines from the v3.x.y tag), so
+# the contract pins the SHAPE, not a stale literal that broke on every bump.
+version_code = re.search(r'versionCode = (\d+)', BUILD)
+version_name = re.search(r'versionName = "([^"]+)"', BUILD)
+assert version_code and version_name
+print(f"PASS carrier-side probe failures do not set DEGRADED; version {version_name.group(1)} ({version_code.group(1)})")

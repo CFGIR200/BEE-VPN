@@ -5,6 +5,7 @@ ROOT = Path(__file__).parents[1]
 MAIN = ROOT / "app/src/main/java/com/msnguard/vpn/MainActivity.kt"
 SERVICE = ROOT / "app/src/main/java/com/msnguard/vpn/MsnGuardVpnService.kt"
 EXIT = ROOT / "app/src/main/java/com/msnguard/vpn/WarpExitManager.kt"
+CORE = ROOT / "app/src/main/java/com/msnguard/vpn/CoreConfig.kt"
 BUILD = ROOT / "app/build.gradle.kts"
 
 
@@ -18,13 +19,15 @@ class MasqueExitNodeContractTest(unittest.TestCase):
         self.assertNotIn("aether-lastconn.toml", block)
 
     def test_custom_exit_requires_real_tcp_preflight_before_upstream(self):
-        service = SERVICE.read_text()
+        # The custom-exit machinery moved out of the service: the TCP preflight
+        # lives in WarpExitManager, the AETHER_UPSTREAM wiring in CoreConfig.
+        exit_mgr = EXIT.read_text()
         probe = 'probeTcpThroughExit("www.cloudflare.com", 443, 2_000)'
-        upstream = 'warpExitUpstream = "socks5://127.0.0.1:${WarpExitManager.SOCKS_PORT}"'
-        self.assertIn(probe, service)
-        self.assertIn("TCP preflight passed", service)
-        self.assertIn("falling back to Freedom", service)
-        self.assertLess(service.index(probe), service.index(upstream))
+        self.assertIn(probe, exit_mgr)
+        self.assertIn("TCP preflight passed", exit_mgr)
+        core = CORE.read_text()
+        upstream = 'out["AETHER_UPSTREAM"] = socksProxyForCore'
+        self.assertIn(upstream, core)
 
     def test_preflight_keeps_dns_inside_socks_proxy(self):
         text = EXIT.read_text()
@@ -32,16 +35,20 @@ class MasqueExitNodeContractTest(unittest.TestCase):
         self.assertIn("InetSocketAddress.createUnresolved(host, port)", text)
 
     def test_version_is_experimental_and_incremented(self):
+        # The version is tag-driven (CI rewrites these lines from the v3.x.y
+        # tag), so the contract pins the SHAPE, not a stale literal.
         text = BUILD.read_text()
-        self.assertIn("versionCode = 449", text)
-        self.assertIn('versionName = "3.2.0"', text)
+        import re
+        assert re.search(r'versionCode = \d+', text)
+        assert re.search(r'versionName = "[^\"]+"', text)
 
     def test_custom_exit_clears_freedom_ech_on_main_and_mtu_retry_env(self):
-        service = SERVICE.read_text()
-        self.assertGreaterEqual(service.count('remove("AETHER_API_ECH")'), 2)
-        self.assertGreaterEqual(service.count('remove("AETHER_ECH")'), 2)
-        self.assertIn('put("AETHER_UPSTREAM", warpExitUpstream!!)', service)
-        self.assertIn('patched["AETHER_UPSTREAM"] = "socks5://127.0.0.1:${WarpExitManager.SOCKS_PORT}"', service)
+        # ECH clearing happens in CoreConfig now — on the main env build and
+        # on the MTU-retry rebuild (both masque-family branches).
+        core = CORE.read_text()
+        self.assertGreaterEqual(core.count('remove("AETHER_API_ECH")'), 2)
+        self.assertGreaterEqual(core.count('remove("AETHER_ECH")'), 2)
+        self.assertIn('out["AETHER_UPSTREAM"] = socksProxyForCore', core)
 
 
 if __name__ == "__main__":

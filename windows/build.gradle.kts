@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "com.beevpn"
-version = "1.3.0"
+version = "1.4.0"
 
 repositories {
     // JetBrains' read-through mirror of Maven Central — resilient when the
@@ -73,7 +73,7 @@ val generateBeeConfig by tasks.registering {
                 const val TELEGRAM_URL = "${esc(telegram)}"
                 const val SUPPORT_URL = "${esc(support)}"
                 const val GITHUB_URL = "https://github.com/CFGIR200/BEE-VPN"
-                const val VERSION = "1.2.0"
+                const val VERSION = "${project.version}"
             }
             """.trimIndent()
         )

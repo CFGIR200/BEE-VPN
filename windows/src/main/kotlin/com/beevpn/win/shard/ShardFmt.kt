@@ -24,6 +24,11 @@ object ShardImport {
             val line = raw.trim()
             if (line.isEmpty() || line.startsWith("#")) continue
             val p = parseOne(line) ?: continue
+            // The publisher ships "Sni-Spoofing" variants that dial
+            // 127.0.0.1:<port> — they only work behind a LOCAL forwarder this
+            // app does not run, so every one of them is a race slot burned on
+            // a guaranteed probe failure. Loopback servers never enter the pool.
+            if (p.server == "127.0.0.1" || p.server == "localhost" || p.server == "::1" || p.server == "[::1]") continue
             profiles.add(p)
         }
         return profiles

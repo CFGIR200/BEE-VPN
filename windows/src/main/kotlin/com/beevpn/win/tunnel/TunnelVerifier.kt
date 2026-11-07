@@ -34,6 +34,10 @@ object TunnelVerifier {
     private const val TRACE_HOST = "www.cloudflare.com"
     private const val TRACE_PATH = "/cdn-cgi/trace"
 
+    /// The generate_204 far end — cp.cloudflare.com, the same host the
+    /// phone's PING_URLS use for the in-tunnel verification probe.
+    private const val PROBE_204_HOST = "cp.cloudflare.com"
+
     // ---------------------------------------------------- system routing
 
     /// Does the system IPv4 routing table send 0.0.0.0/0 through the TUN?
@@ -185,6 +189,60 @@ object TunnelVerifier {
             ?.substringAfter("ip=")
             ?.trim()
             ?.takeIf { it.isNotEmpty() && it.length <= 45 }
+
+    /// The second e2e shape through the same SOCKS listener: a real
+    /// generate_204 request. Some networks blackhole one far end (the trace
+    /// host) while the tunnel itself is perfectly alive — a byte that returns
+    /// a 204 is the same proof with a different far end, and it is exactly
+    /// the probe the phone's UI verification uses (PING_URLS). True when the
+    /// far end answered 204/200 through the tunnel.
+    fun tunnel204ViaSocks(port: Int, timeoutMs: Long): Boolean {
+        return try {
+            Socket().use { s ->
+                s.tcpNoDelay = true
+                s.soTimeout = timeoutMs.toInt()
+                s.connect(InetSocketAddress("127.0.0.1", port), timeoutMs.toInt())
+
+                val out = s.getOutputStream()
+                val input = s.getInputStream()
+
+                // SOCKS5 greeting: ver 5, 1 method, no-auth
+                out.write(byteArrayOf(0x05, 0x01, 0x00)); out.flush()
+                val greet = readN(input, 2)
+                if (greet.size < 2 || greet[0] != 0x05.toByte()) return false
+
+                // CONNECT cp.cloudflare.com:80 by name — the same ATYT the
+                // phone's shard probes use, so the resolver inside the tunnel
+                // is what decides, not the carrier's poisoned DNS.
+                val host = PROBE_204_HOST.toByteArray(Charsets.US_ASCII)
+                val req = ByteArray(7 + host.size)
+                req[0] = 0x05; req[1] = 0x01; req[2] = 0x00
+                req[3] = 0x03; req[4] = host.size.toByte()
+                host.copyInto(req, 5)
+                req[5 + host.size] = 0x00; req[6 + host.size] = 0x50 // 80
+                out.write(req); out.flush()
+
+                val rep = readN(input, 10)
+                if (rep.size < 2 || rep[1] != 0x00.toByte()) return false
+
+                val http = ("GET /generate_204 HTTP/1.1\r\n" +
+                    "Host: $PROBE_204_HOST\r\n" +
+                    "User-Agent: BEE-VPN/1.0\r\n" +
+                    "Connection: close\r\n\r\n").toByteArray(Charsets.US_ASCII)
+                out.write(http); out.flush()
+
+                val buf = ByteArray(1024)
+                var head = ""
+                try {
+                    val n = input.read(buf)
+                    if (n > 0) head = String(buf, 0, n, Charsets.UTF_8)
+                } catch (_: Exception) { /* close is fine after the reply */ }
+                head.contains(" 204 ") || head.contains(" 200 ")
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
 
     // ---------------------------------------------------- capability probe
 

@@ -78,7 +78,12 @@ data class WarpIdentity(
 /// remains the last-resort escape hatch, exactly like iOS.
 object WarpProvisioner {
 
-    private const val REGISTER_URL = "https://api.cloudflareclient.com/v0a4471/reg"
+    /// The registration API under BOTH names Cloudflare serves it on. On
+    /// carriers that poison api.cloudflareclient.com the devices host often
+    /// still resolves (the same route Android's IdentityRelayClient walks:
+    /// api.devices.cloudflare.com → api.cloudflareclient.com).
+    private val API_HOSTS = listOf("api.devices.cloudflare.com", "api.cloudflareclient.com")
+    private const val REGISTER_PATH = "/v0a4471/reg"
     const val DEFAULT_ENDPOINT = "engage.cloudflareclient.com:2408"
 
     /// Wire ports the Ptech-quality WARP surfaces actually answer on — the
@@ -95,9 +100,77 @@ object WarpProvisioner {
 
     fun purge() = SecureStore.remove(KEYCHAIN_KEY)
 
+    // -------------------------------------------------- API reachability
+
+    /// Android's accountApiReachable contract, desktop edition: one POST probe
+    /// decides whether the device's own link can reach the registration API at
+    /// all, and a negative answer is cached for 5 minutes so the Auto-Scan
+    /// ladder does not pay the dead timeout on every rung. A 4xx still proves
+    /// the route is open — only total transport failure counts as blocked.
+    @Volatile private var apiBlockedSince = 0L
+    private const val API_BLOCKED_CACHE_MS = 5 * 60_000L
+    private const val PROBE_TIMEOUT_MS = 8_000
+
+    /// True while a cached "blocked" verdict is fresh — the caller skips the
+    /// doomed direct registration and goes straight to the engine's ECH path.
+    fun apiRecentlyBlocked(): Boolean =
+        apiBlockedSince != 0L &&
+            System.currentTimeMillis() - apiBlockedSince < API_BLOCKED_CACHE_MS
+
+    fun clearApiBlockedCache() { apiBlockedSince = 0L }
+
+    /// The probe — a real POST to /reg (a plain GET answers on carriers that
+    /// still drop the actual registration, so the probe must match its shape).
+    private fun probeApiBlocked(): Boolean {
+        for (host in API_HOSTS) {
+            try {
+                val body = JSONObject()
+                    .put("install_id", "").put("fcm_token", "")
+                    .put("tos", java.time.Instant.now().toString().replace(Regex("\\.\\d+Z$"), "Z"))
+                    .put("model", "Windows").put("serial_number", "unknown")
+                    .put("locale", "en_US").put("key_type", "curve25519")
+                    .put("tunnel_type", "wireguard")
+                val conn = URI("https", null, host, 443, REGISTER_PATH, null, null)
+                    .toURL().openConnection() as javax.net.ssl.HttpsURLConnection
+                conn.connectTimeout = PROBE_TIMEOUT_MS
+                conn.readTimeout = PROBE_TIMEOUT_MS
+                conn.requestMethod = "POST"
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("User-Agent", "okhttp/3.12.1")
+                conn.setRequestProperty("CF-Client-Version", "a-6.41-2158")
+                conn.doOutput = true
+                conn.outputStream.use { it.write(body.toString().toByteArray()) }
+                // Any HTTP status means the route works — even 400/429.
+                val reachable = conn.responseCode in 200..599
+                conn.disconnect()
+                if (reachable) {
+                    apiBlockedSince = 0L
+                    return false
+                }
+            } catch (_: Exception) {
+                // try the next host
+            }
+        }
+        apiBlockedSince = System.currentTimeMillis()
+        return true
+    }
+
     /// Registers a fresh identity. Throws a Persian, buyer-readable error on
     /// failure — the message ends up on the Home screen, not in a log.
+    ///
+    /// Host ladder: api.devices.cloudflare.com first (usually unfiltered),
+    /// then api.cloudflareclient.com. On a network the probe already measured
+    /// as blocked the call refuses fast so the engine's ECH-backed register
+    /// takes over instead of burning another 30 s on a dead route.
     suspend fun register(throughSocksPort: Int? = null): WarpIdentity = withContext(Dispatchers.IO) {
+        if (throughSocksPort == null) {
+            // Fresh verdict or the 5-minute cached one: a measured-blocked
+            // route means the engine's ECH register is the only path — refuse
+            // fast instead of burning ~60 s on two dead hosts.
+            if (apiRecentlyBlocked() || probeApiBlocked()) {
+                throw ProvisionError("مسیر ثبت‌نام WARP روی این شبکه مسدود است — از مسیر رمزگذاری‌شده (ECH) تلاش می‌شود")
+            }
+        }
         // newX25519KeyPair returns (privateRaw, publicRaw), both 32 raw bytes.
         val (privateRaw, publicRaw) = newX25519KeyPair()
         val publicKeyB64 = Base64.getEncoder().encodeToString(publicRaw)
@@ -111,34 +184,56 @@ object WarpProvisioner {
             .put("locale", Locale.getDefault().toString())
             .put("key_type", "curve25519")
             .put("tunnel_type", "wireguard")
+            // The client's own public key — the API refuses a registration
+            // without it ("key" is what the endpoint will hand our packets to).
+            .put("key", publicKeyB64)
 
-        val builder = HttpRequest.newBuilder()
-            .uri(URI.create(REGISTER_URL))
-            .timeout(Duration.ofSeconds(20))
-            .header("Content-Type", "application/json")
-            // The exact headers the Android registration uses — the API is picky.
-            .header("User-Agent", "okhttp/3.12.1")
-            .header("CF-Client-Version", "a-6.41-2158")
-            .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+        var lastError: Exception? = null
+        for (host in API_HOSTS) {
+            val builder = HttpRequest.newBuilder()
+                .uri(URI.create("https://$host$REGISTER_PATH"))
+                .timeout(Duration.ofSeconds(20))
+                .header("Content-Type", "application/json")
+                // The exact headers the Android registration uses — the API is picky.
+                .header("User-Agent", "okhttp/3.12.1")
+                .header("CF-Client-Version", "a-6.41-2158")
+                .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
 
-        val clientBuilder = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(12))
-        if (throughSocksPort != null) {
-            clientBuilder.proxy(ProxySelector.of(InetSocketAddress("127.0.0.1", throughSocksPort)))
-        }
+            val clientBuilder = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(12))
+            if (throughSocksPort != null) {
+                clientBuilder.proxy(ProxySelector.of(InetSocketAddress("127.0.0.1", throughSocksPort)))
+            }
 
-        val resp: HttpResponse<String> = try {
-            clientBuilder.build().send(builder.build(), HttpResponse.BodyHandlers.ofString())
-        } catch (e: Exception) {
-            throw ProvisionError(
-                if (throughSocksPort == null)
-                    "ثبت‌نام WARP ممکن نشد — اپراتور مسیر api.cloudflareclient.com را می‌بندد؟ (${e.message ?: "بدون جزئیات"})"
-                else "ثبت‌نام WARP از مسیر SHARD هم ناموفق بود (${e.message ?: "بدون جزئیات"})"
-            )
+            val resp: HttpResponse<String> = try {
+                clientBuilder.build().send(builder.build(), HttpResponse.BodyHandlers.ofString())
+            } catch (e: Exception) {
+                lastError = e
+                continue   // next host
+            }
+            if (resp.statusCode() !in 200..299) {
+                // A hard 4xx answer means THIS host answered but refused — the
+                // route works, so do not mask it with the other host.
+                if (resp.statusCode() == 429) { lastError = ProvisionError("سرور WARP کد ۴۲۹ برگرداند — کمی بعد تلاش کن"); continue }
+                throw ProvisionError("سرور WARP کد ${resp.statusCode()} برگرداند — کمی بعد یا با تنظیم دستی تلاش کن")
+            }
+            val identity = parseRegistration(resp.body(), privateRaw)
+            save(identity)
+            apiBlockedSince = 0L
+            return@withContext identity
         }
-        if (resp.statusCode() !in 200..299) {
-            throw ProvisionError("سرور WARP کد ${resp.statusCode()} برگرداند — کمی بعد یا با تنظیم دستی تلاش کن")
-        }
-        val obj = try { JSONObject(resp.body()) } catch (_: Exception) { throw ProvisionError("پاسخ ثبت‌نام WARP ناقص بود — دوباره تلاش کن") }
+        // Both hosts failed at the transport level — mark the carrier blocked
+        // so the next attempt skips straight to the engine's ECH register.
+        if (throughSocksPort == null) apiBlockedSince = System.currentTimeMillis()
+        throw ProvisionError(
+            if (throughSocksPort == null)
+                "ثبت‌نام WARP ممکن نشد — اپراتور مسیر api.cloudflareclient.com را می‌بندد؟ (${lastError?.message ?: "بدون جزئیات"})"
+            else "ثبت‌نام WARP از مسیر SHARD هم ناموفق بود (${lastError?.message ?: "بدون جزئیات"})"
+        )
+    }
+
+    /// The registration response → identity. Split out so both hosts share it.
+    private fun parseRegistration(body: String, privateRaw: ByteArray): WarpIdentity {
+        val obj = try { JSONObject(body) } catch (_: Exception) { throw ProvisionError("پاسخ ثبت‌نام WARP ناقص بود — دوباره تلاش کن") }
         val deviceId = obj.optString("id", "")
         val apiToken = obj.optString("token", "")
         val config = obj.optJSONObject("config")
@@ -156,7 +251,7 @@ object WarpProvisioner {
         if (clientIdB64.isBlank()) {
             WarpProvisionerLog.warn("registration returned no client_id — WARP egress will likely fail")
         }
-        val identity = WarpIdentity(
+        return WarpIdentity(
             deviceId = deviceId,
             apiToken = apiToken,
             privateKey = Base64.getEncoder().encodeToString(privateRaw),
@@ -166,8 +261,6 @@ object WarpProvisioner {
             endpoint = DEFAULT_ENDPOINT,
             clientIdB64 = clientIdB64,
         )
-        save(identity)
-        identity
     }
 
     /// Generates a fresh X25519 keypair and returns (privateRaw, publicRaw) —

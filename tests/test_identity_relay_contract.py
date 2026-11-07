@@ -35,7 +35,11 @@ class RelayContract(unittest.TestCase):
             self.assertIn('put(' + key, RELAY)
         self.assertIn('JSONObject().put("warp_enabled", true)', RELAY)
         self.assertIn('if (!enabled.optBoolean("warp_enabled", false))', RELAY)
-        self.assertIn('request(endpoint, "PATCH", ENROLL_PATH_PREFIX + deviceId, update, token)', RELAY)
+        # The enrollment core is transport-agnostic since the SHARD-backed
+        # path joined it: the PATCH rides the ApiCall, the relay transport is
+        # wired in enroll().
+        self.assertIn('call.call("PATCH", ENROLL_PATH_PREFIX + deviceId, update, token)', RELAY)
+        self.assertIn('request(endpoint, method, path, body, token)', RELAY)
         self.assertIn('wg_private_key', CORE_CONFIG)
         self.assertIn('cert_pem', CORE_CONFIG)
 
@@ -46,7 +50,9 @@ class RelayContract(unittest.TestCase):
         self.assertIn('104.24.4.6', RELAY)
         self.assertIn('104.18.0.6', RELAY)
         self.assertIn('Retry-After', RELAY)
-        self.assertIn('installId(context)', RELAY)
+        # install_id rides empty — the exact body the Rust core sends
+        # (account::register leaves install_id/fcm_token empty on fresh devices).
+        self.assertIn('put("install_id", "")', RELAY)
         self.assertIn('enrollDirect(context', RELAY)
         self.assertIn('ApiRoute(API_PRIMARY, API_PRIMARY)', RELAY)
         self.assertIn('API_EDGES.map', RELAY)
