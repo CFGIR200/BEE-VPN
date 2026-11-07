@@ -76,7 +76,14 @@ const docMsg = (id) => ({ update_id: Math.random(), message: { message_id: Math.
 const cb = (id, data) => ({ update_id: Math.random(), callback_query: { id: 'cb' + Math.random(), from: { id, first_name: 'U' + id }, message: { message_id: 500, chat: { id, type: 'private' } }, data } });
 const sentTo = (chatId) => tg.filter((c) => c.method === 'sendMessage' && String(c.body.chat_id) === String(chatId));
 const lastSentTo = (chatId) => sentTo(chatId).at(-1)?.body?.text || '';
+const lastEditTo = (chatId) => tg.filter((c) => c.method === 'editMessageText' && String(c.body.chat_id) === String(chatId)).at(-1)?.body?.text || '';
 const count = (method) => tg.filter((c) => c.method === method).length;
+// حسابِ ثبت‌نام‌شدهٔ فرضی — برای کاربرانی که باید از گیتِ ثبت‌نام رد شوند بدون
+// اینکه سهمیهٔ تست ۱ روزه‌شان مصرف شود (آزمون‌های خرید).
+const seedReg = (tgId, plan = 'm1') => env.DB.prepare(
+  'INSERT INTO accounts (username, pass_hash, pass_salt, plan, status, duration_days, telegram_user_id, created_at) '
+  + 'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+).bind('beeseed' + tgId, 'seeded', 'seeded', plan, 'active', 30, tgId, Math.floor(Date.now() / 1000)).run();
 
 let pass = 0, fail = 0;
 const ok = (cond, label) => { if (cond) { pass++; console.log('  ✅', label); } else { fail++; console.log('  ❌', label); } };
@@ -98,7 +105,11 @@ ok(lastSentTo(111).includes('رسید دریافت شد'), 'خریدار «رس�
 ok(sentTo(222).some((c) => (c.body.text || '').includes('رسید پرداخت')), 'ادمین دوم هم رسید را گرفت');
 
 section('T2 — خریدار عادی (905556034) با پلن m3');
-ok(await drive(cb(905556034, 'plan:m3')) === 200, 'تپ plan:m3 → 200');
+// گیت ثبت‌نام: خرید فقط بعد از 📝 — 905556034 اول ثبت‌نام می‌کند (مسیر واقعی)
+ok(await drive(cb(905556034, 'reg')) === 200, 'تپ 📝 ثبت‌نام → 200');
+ok(await drive(cb(905556034, 'regplan:trial')) === 200, 'ثبت‌نامِ تست → حساب ساخته شد');
+ok(env.DB.prepare('SELECT COUNT(*) AS n FROM accounts WHERE telegram_user_id = 905556034').first().n === 1, 'پروفایل 905556034 ساخته شد (گیت برایش باز شد)');
+ok(await drive(cb(905556034, 'plan:m3')) === 200, 'تپ plan:m3 → 200 (بعد از ثبت‌نام از گیت رد شد)');
 const nCopy = count('copyMessage');
 ok(await drive(photoMsg(905556034)) === 200, 'عکس رسید → 200');
 ok(count('copyMessage') === nCopy + 2, 'copyMessage به هر دو ادمین');
@@ -111,13 +122,14 @@ const nCopy2 = count('copyMessage');
 ok(await drive(docMsg(905556034)) === 200, 'ارسال عکس به‌صورت document → 200');
 ok(count('copyMessage') === nCopy2 + 2, 'document-عکس هم به ادمین‌ها رسید');
 
-section('T3 — عکس بدون انتخاب پلن (کاربر تازه 777)');
+section('T3 — عکس بدون انتخاب پلن (کاربر تازه و ثبت‌نام‌نکردهٔ 777)');
 const nCopy3 = count('copyMessage');
-ok(await drive(photoMsg(777)) === 200, 'عکس بدون pending → 200');
+ok(await drive(photoMsg(777)) === 200, 'عکس بدون pending از ثبت‌نام‌نکرده → 200');
 ok(count('copyMessage') === nCopy3, 'هیچ copyMessage اتفاق نیفتاد');
-ok(lastSentTo(777).includes('اول پلن'), 'کاربر راهنمایی شد اول پلن انتخاب کند');
+ok(lastSentTo(777).includes('اول ثبت‌نام'), 'کاربر ثبت‌نام‌نکرده به گیت خورد — به 📝 هدایت شد');
 
 section('T4 — شکست ارسال به ادمین (شبیه‌سازی 403 هر دو ادمین)');
+seedReg(888);  // ثبت‌نام‌شدهٔ فرضی — از گیت رد شود؛ سهمیهٔ تستش برای T20b دست‌نخورده می‌ماند
 ok(await drive(cb(888, 'plan:m1')) === 200, 'تپ plan:m1 برای 888 → 200');
 failRules = [{ method: 'copyMessage', times: 99, description: "Forbidden: bot can't initiate conversation with a user" }];
 ok(await drive(photoMsg(888)) === 200, 'عکس با شکست ارسال → 200');
@@ -126,6 +138,7 @@ ok(lastSentTo(888).includes('t.me/Bee_hive_VPN'), 'لینک پشتیبانی د�
 failRules = [];
 
 section('T5 — کپشن/دکمه ناموفق → fallback به editMessageCaption');
+seedReg(999);  // همان منطق T4
 ok(await drive(cb(999, 'plan:m12')) === 200, 'تپ plan:m12 برای 999 → 200');
 const nEditCap = count('editMessageCaption');
 failRules = [{ method: 'sendMessage', chat_id: '222', times: 1, description: 'Bad Request: message caption too long' }];
@@ -150,10 +163,11 @@ ok(tg.filter((c) => c.method === 'editMessageText' && String(c.body.chat_id) ===
 ok(env.DB.prepare('SELECT COUNT(*) AS n FROM licenses WHERE note = ?').bind(lic.note).first().n === 1, 'هنوز فقط یک کد');
 
 section('T8 — pending منقضی (>۲۴ ساعت) پاک می‌شود');
-env.DB.prepare('INSERT INTO pending_receipts (tg_user_id, plan, ts) VALUES (?, ?, ?)').bind(777, 'm1', Math.floor(Date.now() / 1000) - 90000).run();
-ok(await drive(photoMsg(777)) === 200, 'عکس با pending منقضی → 200');
-ok(lastSentTo(777).includes('اول پلن'), 'راهنمای انتخاب پلن دوباره آمد');
-ok(!env.DB.prepare('SELECT tg_user_id FROM pending_receipts WHERE tg_user_id=777').first(), 'ردیف منقضی sweep شد');
+seedReg(8300);  // ثبت‌نام‌شده — «اول پلن» ببیند نه گیتِ ثبت‌نام
+env.DB.prepare('INSERT INTO pending_receipts (tg_user_id, plan, ts) VALUES (?, ?, ?)').bind(8300, 'm1', Math.floor(Date.now() / 1000) - 90000).run();
+ok(await drive(photoMsg(8300)) === 200, 'عکس با pending منقضی → 200');
+ok(lastSentTo(8300).includes('اول پلن'), 'راهنمای انتخاب پلن دوباره آمد');
+ok(!env.DB.prepare('SELECT tg_user_id FROM pending_receipts WHERE tg_user_id=8300').first(), 'ردیف منقضی sweep شد');
 
 section('T9 — متن خریدار (نه عکس) هنگام خرید');
 env.DB.prepare('INSERT INTO pending_receipts (tg_user_id, plan, ts) VALUES (?, ?, ?) ON CONFLICT(tg_user_id) DO UPDATE SET plan = excluded.plan, ts = excluded.ts').bind(777, 'm3', Math.floor(Date.now() / 1000)).run();
@@ -205,7 +219,8 @@ const faJ = (epoch) => {
 ok(prof.includes(faJ(expT)), `تاریخ شمسی درست: ${faJ(expT)}`);
 ok(prof.includes('باقی‌مانده'), 'روزهای باقی‌مانده نشان داده شد');
 ok(prof.includes('در جریان'), 'خلاصهٔ اشتراک در جریان');
-ok(await drive(cb(424242, 'mysub')) === 200 && lastSentTo(424242).includes('هنوز اشتراکی نداری'), 'پروفایل کاربر بدون اشتراک');
+ok(await drive(cb(424242, 'mysub')) === 200 && lastSentTo(424242).includes('هنوز ثبت‌نام نکردی'), 'پروفایل کاربر ثبت‌نام‌نکرده: مسیر 📝 نشان داده شد');
+ok(JSON.stringify(sentTo(424242).at(-1)?.body?.reply_markup || {}).includes('callback_data":"reg"'), 'پروفایل خالی: دکمهٔ 📝 ثبت‌نام به‌جای خریدِ قفل');
 
 section('T14b — کامند /profile (همان کارت دکمهٔ پروفایل)');
 ok(await drive(textMsg(905556034, '/profile')) === 200, '/profile → 200');
@@ -366,7 +381,8 @@ ok(await drive(textMsg(999999, '/card hack-attempt')) === 200, '/card از غی�
 ok(env.DB.prepare('SELECT COUNT(*) AS n FROM settings').first().n === settingsBefore, 'غیرادمین چیزی تغییر نداد');
 
 section('T25 — سفر چندکاربره: هر تأییدی، پروفایل + لایسنس با هم می‌دهد');
-// U2: خریدار تازه از مسیر 🛍
+// U2: خریدار تازه از مسیر 🛍 (ثبت‌نام‌شدهٔ فرضی — گیت رد می‌شود)
+seedReg(7001);
 ok(await drive(cb(7001, 'plan:m1')) === 200, 'U2 پلن m1 را زد');
 ok(await drive(photoMsg(7001)) === 200, 'U2 رسید فرستاد');
 const btnU2a = tg.filter((c) => c.method === 'sendMessage' && String(c.body.chat_id) === '111')
@@ -375,7 +391,9 @@ ok(!!btnU2a, 'دکمهٔ تأیید برای ادمین آمد');
 ok(await drive(cb(111, `ok:7001:m1:${btnU2a.match(/ok:7001:m1:(\d+)/)[1]}`)) === 200, 'ادمین ✅ زد');
 const u2msg = lastSentTo(7001);
 ok(u2msg.includes('پروفایل تو'), 'U2: نام کاربری پروفایل آمد');
-ok(u2msg.includes('رمز عبور'), 'U2: رمز آمد');
+// گیتِ جدید: خریدار اول ثبت‌نام می‌کند (رمز همان‌جا می‌رسد) — رسیدِ خرید حسابِ موجود
+// را استفاده می‌کند و رمز دیگر تکرار نمی‌شود؛ یادآوریِ «رمز قبلی» می‌آید.
+ok(u2msg.includes('رمز قبلی'), 'U2: رمز دوباره لو نمی‌رود — یادآوری «رمز قبلی» آمد');
 ok(/BEE-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}/.test(u2msg), 'U2: لایسنس کد آمد');
 ok(env.DB.prepare('SELECT COUNT(*) AS n FROM accounts WHERE telegram_user_id = 7001').first().n === 1, 'U2: دقیقاً یک پروفایل');
 ok(env.DB.prepare('SELECT COUNT(*) AS n FROM licenses WHERE telegram_user_id = 7001').first().n === 1, 'U2: دقیقاً یک لایسنس');
@@ -391,9 +409,10 @@ ok(u2msg2.includes('رمز قبلی'), 'U2: به‌جای رمز، «رمز قب
 ok(!u2msg2.includes('رمز عبور:'), 'U2: رمز دوباره نشان داده نشد (hash نگه‌داری می‌شود)');
 ok(env.DB.prepare('SELECT COUNT(*) AS n FROM accounts WHERE telegram_user_id = 7001').first().n === 1, 'U2: پروفایل تکراری ساخته نشد');
 ok(env.DB.prepare('SELECT COUNT(*) AS n FROM licenses WHERE telegram_user_id = 7001').first().n === 2, 'U2: دو لایسنس مستقل');
-// U3: اول ثبت‌نام (تست) بعد خرید — ثبت‌نام بن‌بست نیست
+// U3: اول ثبت‌نام (تست) بعد خرید — ثبت‌نام بن‌بست نیست و گیت را هم باز می‌کند
 ok(await drive(cb(7002, 'regplan:trial')) === 200, 'U3 اول ثبت‌نام تست زد');
-ok(await drive(cb(7002, 'plan:m1')) === 200, 'U3 بلافاصله خرید زد');
+ok(await drive(cb(7002, 'plan:m1')) === 200, 'U3 بلافاصله خرید زد (گیت با ثبت‌نام باز شد)');
+ok(!!env.DB.prepare('SELECT tg_user_id FROM pending_receipts WHERE tg_user_id = 7002').first(), 'U3: pending خرید ثبت شد — ثبت‌نام مانع خرید نیست');
 ok(await drive(photoMsg(7002)) === 200, 'U3 رسید فرستاد');
 const btnU3 = tg.filter((c) => c.method === 'sendMessage' && String(c.body.chat_id) === '111')
   .map((c) => JSON.stringify(c.body.reply_markup || {})).reverse().find((s) => s.includes('ok:7002:m1:'));
@@ -425,6 +444,55 @@ ok(await drive(cb(111, `oka:7003:m3:${btnU3bA.match(/oka:7003:m3:(\d+)/)[1]}`)) 
 ok(await drive(cb(222, `oka:7003:m3:${btnU3bA.match(/oka:7003:m3:(\d+)/)[1]}`)) === 200, 'ادمین ۲ هم ✅ زد (مسابقه)');
 ok(env.DB.prepare('SELECT COUNT(*) AS n FROM licenses WHERE telegram_user_id = 7003').first().n === 1, 'با دو ✅ هم‌زمان، فقط یک لایسنس');
 ok(env.DB.prepare('SELECT COUNT(*) AS n FROM accounts WHERE telegram_user_id = 7003').first().n === 1, 'با دو ✅ هم‌زمان، فقط یک پروفایل');
+
+// ===========================================================================
+// گیت ثبت‌نام — «🎁 کد تست» و «🛍 خرید» برای ثبت‌نام‌نکرده‌ها باز نیست
+// (درخواست اپراتور: دکمه‌ها فقط بعد از ثبت‌نام کار کنند)
+// ===========================================================================
+
+section('T26 — گیت ثبت‌نام: دکمه‌ها برای ثبت‌نام‌نکرده‌ها قفل است');
+// قفل روی 🎁 کد تست
+ok(await drive(cb(8101, 'trial')) === 200, 'تازه‌کار 🎁 زد → 200');
+ok(lastSentTo(8101).includes('اول ثبت‌نام'), '🎁 قفل بود: پیام «اول ثبت‌نام» آمد');
+ok(JSON.stringify(sentTo(8101).at(-1)?.body?.reply_markup || {}).includes('callback_data":"reg"'), 'دکمهٔ 📝 در پیام گیت هست');
+ok(env.DB.prepare('SELECT COUNT(*) AS n FROM accounts WHERE telegram_user_id = 8101').first().n === 0, 'هیچ حسابی برای تازه‌کار ساخته نشد');
+ok(env.DB.prepare('SELECT COUNT(*) AS n FROM licenses WHERE telegram_user_id = 8101').first().n === 0, 'هیچ لایسنسی برای تازه‌کار صادر نشد');
+ok(tg.filter((c) => c.method === 'answerCallbackQuery').some((c) => (c.body?.text || '').includes('اول ثبت‌نام')), 'توست دکمه هم «اول ثبت‌نام» گفت');
+// قفل روی 🛍 خرید
+ok(await drive(cb(8101, 'buy')) === 200, 'تازه‌کار 🛍 زد → 200');
+ok(!lastSentTo(8101).includes('پلن موردنظر'), 'فهرست پلن‌ها برای ثبت‌نام‌نکرده باز نشد');
+// تزریق مستقیم callback_data هم از گیت رد نمی‌شود
+ok(await drive(cb(8101, 'plan:m1')) === 200, 'plan:m1 مستقیم (تزریق) → 200');
+ok(!env.DB.prepare('SELECT tg_user_id FROM pending_receipts WHERE tg_user_id = 8101').first(), 'pending برای ثبت‌نام‌نکرده ساخته نشد');
+// رسید عکسی بدون pending و بدون ثبت‌نام → گیت، نه صفحهٔ انتخاب پلن
+const nCopyGate = count('copyMessage');
+ok(await drive(photoMsg(8101)) === 200, 'عکس بدون pending از ثبت‌نام‌نکرده → 200');
+ok(count('copyMessage') === nCopyGate, 'عکس او به ادمین‌ها نرفت');
+ok(lastSentTo(8101).includes('اول ثبت‌نام'), 'عکسِ او هم به گیت خورد');
+// دیپ‌لینک‌های اپ هم قفل‌اند
+ok(await drive(textMsg(8101, '/start buy')) === 200, '/start buy ثبت‌نام‌نکرده → 200');
+ok(!lastSentTo(8101).includes('پلن موردنظر'), 'دیپ‌لینک خرید هم قفل بود');
+ok(await drive(textMsg(8101, '/start trial')) === 200, '/start trial ثبت‌نام‌نکرده → 200');
+ok(!lastSentTo(8101).includes('تست ۱ روزهٔ تو ساخته شد'), 'دیپ‌لینک تست هم قفل بود');
+
+section('T26b — بعد از ثبت‌نام، همان دکمه‌ها برای همان کاربر باز می‌شود');
+ok(await drive(cb(8101, 'reg')) === 200, '📝 ثبت‌نام زد');
+ok(lastSentTo(8101).includes('ثبت‌نام در کندو'), 'مقدمهٔ ثبت‌نام از پیام گیت باز شد');
+ok(await drive(cb(8101, 'regplan:trial')) === 200, 'ثبت‌نام تست را کامل کرد');
+ok(env.DB.prepare('SELECT COUNT(*) AS n FROM accounts WHERE telegram_user_id = 8101').first().n === 1, 'حسابش ساخته شد');
+ok(await drive(cb(8101, 'buy')) === 200, 'حالا 🛍 زد → باز شد');
+ok(lastEditTo(8101).includes('پلن موردنظر'), 'فهرست پلن‌ها برایش باز شد');
+ok(await drive(cb(8101, 'trial')) === 200, '🎁 هم باز شد (ولی تستش را برداشته)');
+ok(lastSentTo(8101).includes('قبلاً تست'), '🎁 بعد از ثبت‌نام: سقف تست، همان پاسخ آشنا را داد');
+// عکسِ ثبت‌نام‌شدهٔ بدون pending همچنان «اول پلن» می‌گیرد (نه گیت)
+ok(await drive(photoMsg(8101)) === 200, 'عکسِ ثبت‌نامی بدون pending → 200');
+ok(lastSentTo(8101).includes('اول پلن'), 'مسیر عکسِ ثبت‌نامی همان «اول پلن» است');
+
+section('T26c — ادمین از گیت رد می‌شود (تستِ جریان‌ها و خرید برای دیگران)');
+ok(await drive(cb(222, 'buy')) === 200, 'ادمین 222 🛍 زد');
+ok(lastEditTo(222).includes('پلن موردنظر'), 'ادمین بدون ثبت‌نام هم به فروشگاه رسید');
+ok(await drive(cb(222, 'trial')) === 200, 'ادمین 🎁 زد');
+ok(lastSentTo(222).includes('نام کاربری'), 'ادمین توانست بستهٔ تست بگیرد');
 
 console.log(`\n═══ نتیجه: ${pass} پاس ✅ — ${fail} شکست ❌ ═══`);
 process.exitCode = fail ? 1 : 0;

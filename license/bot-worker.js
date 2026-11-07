@@ -13,6 +13,9 @@
  *     stamped with the buyer's Telegram id/name/@handle.
  *   - trial: hands out exactly one 1-day entitlement per Telegram account,
  *     as a code (🎁) or as a registered account (📝) — never both.
+ *   - gate: «🎁 کد تست» و «🛍 خرید اشتراک» only OPEN after ثبت‌نام — the
+ *     buttons check the accounts table on tap (admins pass) and unregistered
+ *     users are pointed at 📝 instead.
  *   - profile: /profile (rich buyer profile: plan, Jalali activation/expiry
  *              dates, days remaining, device binding) + /link <code> to claim
  *              a code issued by support + the «پروفایل من» button.
@@ -441,15 +444,15 @@ const HELP_TEXT = [
   '',
   '⚠️ هر اشتراک فقط روی <b>یک دستگاه</b> فعال می‌شود.',
   '🔁 اگر گوشی را عوض کردی، از پشتیبانی بخواه دستگاهت را ریست کند.',
+  '🔒 «🎁 کد تست» و «🛍 خرید» فقط بعد از ثبت‌نام باز می‌شوند.',
 ].join('\n');
 
 const WELCOME = [
   '🐝 <b>به کندوی BEE-VPN خوش آمدی!</b>',
   '',
-  'اینجا می‌توانی اشتراک بفروشی یا فعال‌سازی کنی:',
-  '🛍 خرید اشتراک — پلن‌ها و روش پرداخت',
-  '📝 ثبت‌نام — حساب کاربری (نام کاربری و رمز) بگیر',
-  '🎁 کد تست ۱ روزه — یک‌بار برای هر حساب تلگرام',
+  'مسیر تو در کندو:',
+  '📝 ثبت‌نام — قدم اول! حساب کاربری (نام کاربری و رمز) می‌گیری',
+  '🎁 کد تست ۱ روزه و 🛍 خرید اشتراک — بعد از ثبت‌نام باز می‌شوند 🔒',
   '👤 پروفایل من — تاریخ انقضا و روزهای باقی‌مانده',
 ].join('\n');
 
@@ -858,16 +861,23 @@ async function mySub(env, chatId, tgId, from) {
   const priceMap = await getPrices(env);
   const planTitle = (p) => esc((priceMap[p] && priceMap[p].title) || p);
   if (!rows.length && !accRows.length) {
+    // پروفایل خالی = ثبت‌نام‌نکرده (هر ثبت‌نامی یک حساب می‌سازد) — به‌جای دکمهٔ
+    // خریدِ بسته، مسیر 📝 را نشان بده تا گیتِ خرید برایش باز شود.
+    const registered = isAdmin(env, from) || (await isRegistered(env, tgId));
     return send(env, chatId, [
       '👤 <b>پروفایل تو در کندو</b>',
       `🆔 شناسه: <code>${tgId}</code>`,
       '',
-      'هنوز اشتراکی نداری — با 🛍 خرید شروع کن یا 🎁 کد تست بگیر.',
+      registered
+        ? 'هنوز اشتراکی نداری — با 🛍 خرید شروع کن یا 🎁 کد تست بگیر.'
+        : 'هنوز ثبت‌نام نکردی — با 📝 ثبت‌نام شروع کن؛ بعد از آن 🛍 خرید و 🎁 کد تست برایت باز می‌شود.',
       '',
       'اگر پشتیبانی برایت کد ساخته، با این فرمت به پروفایلت وصلش کن:',
       '<code>/link BEE-XXXX-XXXX-XXXX</code>',
     ].join('\n'), { inline_keyboard: [
-    [{ text: '🛍 خرید اشتراک', callback_data: 'buy' }],
+    registered
+      ? [{ text: '🛍 خرید اشتراک', callback_data: 'buy' }]
+      : [{ text: '📝 ثبت‌نام (نام کاربری و رمز)', callback_data: 'reg' }],
     [{ text: '📣 کانال', url: String(env.CHANNEL_URL || 'https://t.me/BEESELL_GP') },
      { text: '💬 پشتیبانی', url: String(env.SUPPORT_URL || 'https://t.me/Bee_hive_VPN') }],
   ] });
@@ -981,6 +991,11 @@ async function handleReceipt(env, msg) {
   const pending = await getPending(env, from.id);
   if (!pending || !planDays(pending.plan)) {
     await clearPending(env, from.id);  // sweep missing/expired row (getPending already rejects stale ones)
+    // گیت ثبت‌نام: عکسِ شخصِ ثبت‌نام‌نکرده خرید نیست — به 📝 هدایت می‌شود.
+    // رسیدِ ثبت‌نامِ در جریان (pending دارد) از این شاخه رد نمی‌شود و دست‌نخورده می‌ماند.
+    if (!(await regGate(env, msg.chat.id, from, null, 'خرید'))) {
+      return new Response('ok');
+    }
     return send(env, msg.chat.id,
       '🧾 برای ارسال رسید، اول پلن موردنظرت را انتخاب کن 👇',
       await planKeyboard(env));
@@ -1235,6 +1250,43 @@ async function rejectReceipt(env, cb, buyerId, plan, ts) {
     `برای بررسی با پشتیبانی در تماس باش: ${esc(support)}`,
   ].join('\n'));
   return answerCb(env, cb.id, 'رسید رد شد');
+}
+
+// ---------------------------------------------------------------------------
+// گیت ثبت‌نام — «🎁 کد تست ۱ روزه» و «🛍 خرید اشتراک» فقط برای ثبت‌نامی‌ها باز
+// است (درخواست اپراتور: دکمه‌ها برای کسانی که ثبت‌نام نکرده‌اند باز نباشد).
+// ثبت‌نام‌شده = صاحب حداقل یک حساب در جدول accounts. ادمین همیشه رد می‌شود
+// (تستِ جریان‌ها و خرید برای دیگران) و رسیدِ ثبت‌نامِ وسطِ جریان هم از گیت عبور
+// می‌کند چون pending دارد — گیت فقط روی تپِ دکمه و شاخهٔ «عکس بدون pending»
+// اعمال شده است، نه روی خودِ رسیدها.
+// ---------------------------------------------------------------------------
+
+/** آیا این شناسهٔ تلگرام حداقل یک‌بار 📝 ثبت‌نام را کامل کرده؟ */
+async function isRegistered(env, tgId) {
+  try {
+    const row = await env.DB.prepare(
+      'SELECT username FROM accounts WHERE telegram_user_id = ? LIMIT 1',
+    ).bind(tgId).first();
+    return !!(row && row.username);
+  } catch (_) { return false; }  // جدول accounts نیست — محافظه‌کارانه: قفل
+}
+
+/** خودِ گیت: true = رد شد (ادمین یا ثبت‌نامی). false = پیامِ «اول ثبت‌نام» رفت
+ *  و جریان باید همان‌جا تمام شود. cbId اختیاری است (تپِ دکمه → توست تلگرام). */
+async function regGate(env, chatId, from, cbId, what) {
+  if (isAdmin(env, from) || (await isRegistered(env, from.id))) return true;
+  await send(env, chatId, [
+    `🔒 <b>اول ثبت‌نام، بعد ${esc(what || 'ادامه')}!</b>`,
+    '',
+    'این بخش فقط برای کاربران ثبت‌نام‌شدهٔ کندو باز است.',
+    'با 📝 ثبت‌نام کن — نام کاربری و رمزت همان‌جا به‌ تو می‌رسد،',
+    'و بعد از آن 🎁 کد تست ۱ روزه و 🛍 خرید اشتراک برایت باز می‌شود.',
+  ].join('\n'), { inline_keyboard: [
+    [{ text: '📝 ثبت‌نام (نام کاربری و رمز)', callback_data: 'reg' }],
+    [{ text: '🔙 منوی اصلی', callback_data: 'menu' }],
+  ] });
+  if (cbId) await answerCb(env, cbId, 'اول ثبت‌نام کن 📝');
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -1901,23 +1953,28 @@ export default {
             parse_mode: 'HTML', reply_markup: mainMenu(env, cb.from), disable_web_page_preview: true,
           }).catch(() => send(env, chatId, WELCOME, mainMenu(env, cb.from)));
         } else if (data === 'buy') {
-          await tg(env, 'editMessageText', {
-            chat_id: chatId, message_id: cb.message.message_id,
-            text: '🛍 <b>پلن موردنظر را انتخاب کن:</b>',
-            parse_mode: 'HTML', reply_markup: await planKeyboard(env),
-          }).catch(async () => send(env, chatId, '🛍 پلن‌ها:', await planKeyboard(env)));
-        } else if (data.startsWith('plan:')) {
-          const plan = data.slice(5);
-          const prev = await getPending(env, tgId);
-          if (planDays(plan) && (!prev || prev.plan !== plan || prev.kind !== 'code')) {
-            await setPending(env, tgId, plan, 'code');
-            await notifyAdmins(env, `🛒 خریدار ${buyerLine(cb.from)} پلن <b>${esc(((await getPrices(env))[plan] || {}).title || plan)}</b> را انتخاب کرد.\nاسکرین‌شاتش که رسید را با دکمهٔ ✅ تأیید کن — کد خودکار برایش ارسال می‌شود.`);
-          } else if (planDays(plan)) {
-            await setPending(env, tgId, plan, 'code');
+          if (await regGate(env, chatId, cb.from, cb.id, 'خرید')) {
+            await tg(env, 'editMessageText', {
+              chat_id: chatId, message_id: cb.message.message_id,
+              text: '🛍 <b>پلن موردنظر را انتخاب کن:</b>',
+              parse_mode: 'HTML', reply_markup: await planKeyboard(env),
+            }).catch(async () => send(env, chatId, '🛍 پلن‌ها:', await planKeyboard(env)));
           }
-          await send(env, chatId, await paymentText(env, plan), {
-            inline_keyboard: [[{ text: '🔙 بازگشت', callback_data: 'buy' }]],
-          });
+        } else if (data.startsWith('plan:')) {
+          // تزریقِ مستقیم callback هم از گیت رد نمی‌شود
+          if (await regGate(env, chatId, cb.from, cb.id, 'خرید')) {
+            const plan = data.slice(5);
+            const prev = await getPending(env, tgId);
+            if (planDays(plan) && (!prev || prev.plan !== plan || prev.kind !== 'code')) {
+              await setPending(env, tgId, plan, 'code');
+              await notifyAdmins(env, `🛒 خریدار ${buyerLine(cb.from)} پلن <b>${esc(((await getPrices(env))[plan] || {}).title || plan)}</b> را انتخاب کرد.\nاسکرین‌شاتش که رسید را با دکمهٔ ✅ تأیید کن — کد خودکار برایش ارسال می‌شود.`);
+            } else if (planDays(plan)) {
+              await setPending(env, tgId, plan, 'code');
+            }
+            await send(env, chatId, await paymentText(env, plan), {
+              inline_keyboard: [[{ text: '🔙 بازگشت', callback_data: 'buy' }]],
+            });
+          }
         } else if (data === 'reg') {
           await regIntro(env, chatId);
         } else if (data.startsWith('regplan:')) {
@@ -1962,7 +2019,9 @@ export default {
             }
           }
         } else if (data === 'trial') {
-          await giveTrialAccount(env, chatId, cb.from);
+          if (await regGate(env, chatId, cb.from, cb.id, 'کد تست')) {
+            await giveTrialAccount(env, chatId, cb.from);
+          }
         } else if (data === 'mysub') {
           await mySub(env, chatId, tgId, cb.from);
         } else if (data === 'help') {
@@ -2004,9 +2063,13 @@ export default {
         // Deep links from the apps: ?start=buy opens the shop, ?start=trial
         // hands out the 1-day code, ?start=register opens ثبت‌نام.
         if (text.includes('buy')) {
-          await send(env, chatId, '🛍 <b>پلن موردنظر را انتخاب کن:</b>', await planKeyboard(env));
+          if (await regGate(env, chatId, msg.from, null, 'خرید')) {
+            await send(env, chatId, '🛍 <b>پلن موردنظر را انتخاب کن:</b>', await planKeyboard(env));
+          }
         } else if (text.includes('trial')) {
-          await giveTrialAccount(env, chatId, msg.from);
+          if (await regGate(env, chatId, msg.from, null, 'کد تست')) {
+            await giveTrialAccount(env, chatId, msg.from);
+          }
         } else if (text.includes('register')) {
           await regIntro(env, chatId);
         }
