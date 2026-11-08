@@ -108,6 +108,12 @@ jobs:
       # The 1.5.0 MSI shipped a trimmed runtime without it, and the license
       # gate died with «Could not initialize class: LicenseAPI». This step
       # makes that packaging gap a hard CI failure, not a buyer's bug report.
+      #
+      # The 1.6.0 lesson (the guard killed a healthy build): `jimage list`
+      # prints class paths indented WITHOUT a leading slash —
+      #     java/net/http/HttpClient.class
+      # so matching on "/<class>" never hits and the guard false-positives.
+      # Match module names (Module: <name> lines) and bare class paths.
       - name: Guard — runtime image must contain java.net.http + crypto
         shell: pwsh
         run: |
@@ -117,28 +123,37 @@ jobs:
           $modules = "$appDir/runtime/lib/modules"
           if (-not (Test-Path $modules)) { throw "runtime image not found at $modules" }
           $list = & jimage list "$modules"
-          $requiredRuntime = @(
+          $requiredModules = @(
+            "java.net.http",
+            "jdk.crypto.ec",
+            "jdk.crypto.cryptoki",
+            "java.naming"
+          )
+          $requiredClasses = @(
             "java/net/http/HttpClient.class",
             "java/net/http/HttpResponse.class",
             "sun/security/ec/SunEC.class"
           )
           $missing = @()
-          foreach ($c in $requiredRuntime) {
-            if (-not ($list | Select-String -SimpleMatch "/$c")) { $missing += $c }
+          foreach ($m in $requiredModules) {
+            if (-not ($list | Select-String -SimpleMatch "Module: $m")) { $missing += $m }
           }
-          # 2) the app jar must carry the gate classes and the brand logo
+          foreach ($c in $requiredClasses) {
+            if (-not ($list | Select-String -SimpleMatch $c)) { $missing += $c }
+          }
+          # 2) the app jar must carry the gate classes, the brand logo and cores
           $jar = Get-ChildItem "$appDir/app" -Filter "*.jar" |
             Where-Object { (& jar tf $_.FullName | Select-String -SimpleMatch "com/beevpn/win/MainKt.class") } |
             Select-Object -First 1
           if (-not $jar) { throw "main app jar not found under $appDir/app" }
           $jarList = & jar tf $jar.FullName
-          foreach ($c in @("com/beevpn/win/license/LicenseAPI.class", "beevpn-logo.png")) {
+          foreach ($c in @("com/beevpn/win/license/LicenseAPI.class", "com/beevpn/win/license/LicenseManager.class", "beevpn-logo.png", "cores/xray.exe", "cores/aether.exe")) {
             if (-not ($jarList | Select-String -SimpleMatch $c)) { $missing += $c }
           }
           if ($missing.Count -gt 0) {
             throw "packaging gap — missing: $($missing -join ', ') (the license gate would crash)"
           }
-          Write-Host "packaging OK: java.net.http + SunEC in the runtime, LicenseAPI + logo in the app jar"
+          Write-Host "packaging OK: java.net.http + crypto + naming in the runtime; LicenseAPI + LicenseManager + logo + cores in the app jar"
 
       # ── Portable zip: the self-contained app image + launcher ────────────
       - name: Assemble portable zip

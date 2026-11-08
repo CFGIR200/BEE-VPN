@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "com.beevpn"
-version = "1.6.0"
+version = "1.6.1"
 
 repositories {
     // JetBrains' read-through mirror of Maven Central — resilient when the
@@ -63,11 +63,13 @@ val generateBeeConfig by tasks.registering {
     // (with BEE_LICENSE_URL set) saw the outputs present and skipped as
     // UP-TO-DATE, baking the stale gate-less config into the MSI. Declaring
     // the values as inputs forces a regeneration whenever any of them changes.
-    val licenseUrl = System.getenv("BEE_LICENSE_URL") ?: ""
-    val licenseKey = System.getenv("BEE_LICENSE_PUBKEY_B64") ?: ""
-    val telegram = System.getenv("BEE_TELEGRAM_URL") ?: "https://t.me/BEESELL_GP"
-    val support = System.getenv("BEE_SUPPORT_URL") ?: "https://t.me/Bee_hive_VPN"
-    val relayHmac = System.getenv("BEE_IDENTITY_RELAY_HMAC") ?: ""
+    val licenseUrl = System.getenv("BEE_LICENSE_URL")?.takeIf { it.isNotBlank() } ?: ""
+    val licenseKey = System.getenv("BEE_LICENSE_PUBKEY_B64")?.takeIf { it.isNotBlank() } ?: ""
+    // Empty-string env (a missing CI secret) must fall through to the default,
+    // not bake an empty support/telegram URL into the app.
+    val telegram = System.getenv("BEE_TELEGRAM_URL")?.takeIf { it.isNotBlank() } ?: "https://t.me/BEESELL_GP"
+    val support = System.getenv("BEE_SUPPORT_URL")?.takeIf { it.isNotBlank() } ?: "https://t.me/Bee_hive_VPN"
+    val relayHmac = System.getenv("BEE_IDENTITY_RELAY_HMAC")?.takeIf { it.isNotBlank() } ?: ""
     inputs.property("licenseUrl", licenseUrl)
     inputs.property("licenseKey", licenseKey)
     inputs.property("telegram", telegram)
@@ -159,12 +161,18 @@ compose.desktop {
             //   jdk.unsupported    → sun.misc.Unsafe (skiko / coroutines)
             // CI now asserts the produced image really carries the classes
             // (see windows.yml, the jimage guard step).
-            modules(
+            // mscapi exists only on Windows JDKs — gate it so a non-Windows
+            // machine can build the very same list for verification.
+            val beeModules = mutableListOf(
                 "java.base", "java.desktop", "java.logging", "java.management",
                 "java.naming", "java.net.http", "java.sql", "java.xml",
-                "jdk.crypto.ec", "jdk.crypto.cryptoki", "jdk.crypto.mscapi",
+                "jdk.crypto.ec", "jdk.crypto.cryptoki",
                 "jdk.unsupported", "jdk.zipfs",
             )
+            if (System.getProperty("os.name")?.contains("Windows", ignoreCase = true) == true) {
+                beeModules += "jdk.crypto.mscapi"
+            }
+            modules(*beeModules.toTypedArray())
             windows {
                 menu = true
                 shortcut = true
