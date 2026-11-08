@@ -381,9 +381,13 @@ object TunnelController {
         }
 
         setState(State.PROVISIONING, "دریافت هویت از سرورهای پروژه…")
-        // The phone caches a blocked-API verdict for 5 minutes and skips
-        // the doomed direct route — the desktop does the same.
-        runCatching { IdentityRelayClient.provision(protocol, allowDirect = !WarpProvisioner.apiRecentlyBlocked()) }
+        // The ladder is walked ALWAYS — the phone never gates its direct rung
+        // behind the blocked-API cache (that cache only steers the SHARD
+        // orchestration there). On a filtered carrier the pinned-edge routes
+        // are exactly what still works, and 1.6.1's allowDirect=false verdict
+        // (a hostname-only probe) skipped the whole rung — the report was
+        // «هویت MASQUE ساخته نشد» from networks the phone registers from.
+        runCatching { IdentityRelayClient.provision(protocol) }
             .onSuccess { outcome ->
                 if (outcome.success) {
                     TunnelVerifier.log("identity via relay/direct ladder: ${outcome.error}")

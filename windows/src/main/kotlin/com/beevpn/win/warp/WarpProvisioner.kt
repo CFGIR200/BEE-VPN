@@ -109,47 +109,30 @@ object WarpProvisioner {
     /// the route is open — only total transport failure counts as blocked.
     @Volatile private var apiBlockedSince = 0L
     private const val API_BLOCKED_CACHE_MS = 5 * 60_000L
-    private const val PROBE_TIMEOUT_MS = 8_000
 
-    /// True while a cached "blocked" verdict is fresh — the caller skips the
-    /// doomed direct registration and goes straight to the engine's ECH path.
+    /// True while a cached "blocked" verdict is fresh — register()'s own fast
+    /// refusal (the ladder in IdentityRelayClient is never gated on this).
     fun apiRecentlyBlocked(): Boolean =
         apiBlockedSince != 0L &&
             System.currentTimeMillis() - apiBlockedSince < API_BLOCKED_CACHE_MS
 
     fun clearApiBlockedCache() { apiBlockedSince = 0L }
 
-    /// The probe — a real POST to /reg (a plain GET answers on carriers that
-    /// still drop the actual registration, so the probe must match its shape).
+    /// The probe — delegated to IdentityRelayClient.probeDirectApi, which
+    /// walks the SAME four-route ladder the enrollment walks (both hostnames
+    /// plus the two pinned Cloudflare edges with the SNI/Host rewrite). The
+    /// 1.6.1 probe dialled the hostnames only, so on a carrier that poisons
+    /// those two names it always recorded "blocked", cached the verdict for
+    /// five minutes, and the direct rung of the ladder was then skipped on
+    /// every attempt — the phone walks its ladder regardless and its pinned
+    /// edges are exactly what rescues it there. The body is the phone's
+    /// deliberately-invalid `{}`: a 400 still proves the route open, and a
+    /// valid body would burn a device slot on every probe.
     private fun probeApiBlocked(): Boolean {
-        for (host in API_HOSTS) {
-            try {
-                val body = JSONObject()
-                    .put("install_id", "").put("fcm_token", "")
-                    .put("tos", java.time.Instant.now().toString().replace(Regex("\\.\\d+Z$"), "Z"))
-                    .put("model", "Windows").put("serial_number", "unknown")
-                    .put("locale", "en_US").put("key_type", "curve25519")
-                    .put("tunnel_type", "wireguard")
-                val conn = URI("https", null, host, 443, REGISTER_PATH, null, null)
-                    .toURL().openConnection() as javax.net.ssl.HttpsURLConnection
-                conn.connectTimeout = PROBE_TIMEOUT_MS
-                conn.readTimeout = PROBE_TIMEOUT_MS
-                conn.requestMethod = "POST"
-                conn.setRequestProperty("Content-Type", "application/json")
-                conn.setRequestProperty("User-Agent", "okhttp/3.12.1")
-                conn.setRequestProperty("CF-Client-Version", "a-6.41-2158")
-                conn.doOutput = true
-                conn.outputStream.use { it.write(body.toString().toByteArray()) }
-                // Any HTTP status means the route works — even 400/429.
-                val reachable = conn.responseCode in 200..599
-                conn.disconnect()
-                if (reachable) {
-                    apiBlockedSince = 0L
-                    return false
-                }
-            } catch (_: Exception) {
-                // try the next host
-            }
+        val reachable = runCatching { IdentityRelayClient.probeDirectApi() }.getOrDefault(false)
+        if (reachable) {
+            apiBlockedSince = 0L
+            return false
         }
         apiBlockedSince = System.currentTimeMillis()
         return true

@@ -2,6 +2,7 @@ package com.beevpn.win
 
 import com.beevpn.win.engine.AetherEngine
 import com.beevpn.win.warp.IdentityRelayClient
+import com.beevpn.win.warp.PinnedHttp
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -156,5 +157,83 @@ class IdentityRelayClientTest {
         } finally {
             target.delete()
         }
+    }
+
+    // ------------------------------------------------- the pinned-edge ladder
+
+    /// The phone's `apiRoutes()` — both hostnames, then the two pinned
+    /// Cloudflare edge IPs with the API's name kept for SNI, the HTTP Host
+    /// and the certificate check. This ladder IS the rescue on a carrier
+    /// that poisons the API's names: the 1.6.1 desktop shipped without the
+    /// edges and reported «هویت MASQUE ساخته نشد» from networks the phone
+    /// registers from.
+    @Test
+    fun `direct route ladder is the phone's four routes with the edge host rewrite`() {
+        val routes = IdentityRelayClient.API_ROUTES
+        assertEquals(4, routes.size)
+        assertEquals("api.devices.cloudflare.com", routes[0].connectAddress)
+        assertEquals("api.devices.cloudflare.com", routes[0].host)
+        assertEquals("api.cloudflareclient.com", routes[1].connectAddress)
+        assertEquals("api.cloudflareclient.com", routes[1].host)
+        assertEquals("104.24.4.6", routes[2].connectAddress)
+        assertEquals("api.devices.cloudflare.com", routes[2].host)
+        assertEquals("104.18.0.6", routes[3].connectAddress)
+        assertEquals("api.devices.cloudflare.com", routes[3].host)
+    }
+
+    @Test
+    fun `request bytes carry the exact header set the API is picky about`() {
+        val raw = PinnedHttp.requestBytes(
+            "api.devices.cloudflare.com", "POST", "/v0a4471/reg",
+            "{\"key\":\"k\"}", token = "tok-1",
+        )
+        val text = String(raw, Charsets.UTF_8)
+        assertTrue(text.startsWith("POST /v0a4471/reg HTTP/1.1\r\n"))
+        assertTrue(text.contains("Host: api.devices.cloudflare.com\r\n"))
+        assertTrue(text.contains("Content-Type: application/json; charset=UTF-8\r\n"))
+        assertTrue(text.contains("Accept: application/json\r\n"))
+        assertTrue(text.contains("User-Agent: WARP for Android\r\n"))
+        assertTrue(text.contains("CF-Client-Version: a-6.35-4471\r\n"))
+        assertTrue(text.contains("Authorization: Bearer tok-1\r\n"))
+        assertTrue(text.contains("Content-Length: 11\r\n"))
+        assertTrue(text.contains("Connection: close\r\n"))
+        assertTrue(text.endsWith("\r\n\r\n{\"key\":\"k\"}"))
+        // No token — no Authorization line at all (an anonymous registration).
+        val anon = String(
+            PinnedHttp.requestBytes("h", "POST", "/p", "{}", token = null),
+            Charsets.UTF_8,
+        )
+        assertFalse(anon.contains("Authorization"))
+    }
+
+    @Test
+    fun `response parser decodes content-length, chunked and to-EOF bodies`() {
+        // Content-Length framing.
+        val cl = PinnedHttp.parse(
+            ("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" +
+                "Content-Length: 14\r\n\r\n{\"id\":\"dev-1\"}xxx").toByteArray(Charsets.ISO_8859_1),
+        )
+        assertEquals(200, cl.status)
+        assertEquals("{\"id\":\"dev-1\"}", cl.bodyText())
+        assertEquals("application/json", cl.header("content-type"))
+        // Chunked framing — a size line with extensions, two chunks, terminator.
+        val chunked = PinnedHttp.parse(
+            ("HTTP/1.1 201 Created\r\nTransfer-Encoding: chunked\r\n\r\n" +
+                "5;ext=1\r\n{\"id\"\r\n7\r\n:\"dev\"}\r\n0\r\n\r\n").toByteArray(Charsets.ISO_8859_1),
+        )
+        assertEquals(201, chunked.status)
+        assertEquals("{\"id\":\"dev\"}", chunked.bodyText())
+        // To-EOF framing (Connection: close, no length at all).
+        val eof = PinnedHttp.parse("HTTP/1.1 400 Bad Request\r\n\r\nno json here".toByteArray(Charsets.ISO_8859_1))
+        assertEquals(400, eof.status)
+        assertEquals("no json here", eof.bodyText())
+    }
+
+    @Test
+    fun `response parser rejects a carrier block page masquerading as HTTP`() {
+        val garbage = "<html><body>blocked by carrier</body></html>".toByteArray()
+        org.junit.jupiter.api.assertThrows<java.io.IOException> { PinnedHttp.parse(garbage) }
+        // A headerless non-HTTP blob must never parse as a status either.
+        org.junit.jupiter.api.assertThrows<java.io.IOException> { PinnedHttp.parse(ByteArray(0)) }
     }
 }
