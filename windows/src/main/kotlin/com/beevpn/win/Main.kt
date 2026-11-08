@@ -82,15 +82,46 @@ import com.beevpn.win.ui.T
 /// under a drifting aurora, a glass navigation rail on the right, and content
 /// that slides in with depth. Gated by the same Ed25519 entitlement the phone
 /// runs.
-fun main() = application {
-    Window(
-        onCloseRequest = ::exitApplication,
-        title = "BEE-VPN",
-        state = rememberWindowState(width = 1120.dp, height = 720.dp),
-    ) {
-        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-            AppRoot()
+fun main() {
+    maybeRelaunchElevated()
+    application {
+        Window(
+            onCloseRequest = ::exitApplication,
+            title = "BEE-VPN",
+            state = rememberWindowState(width = 1120.dp, height = 720.dp),
+        ) {
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+                AppRoot()
+            }
         }
+    }
+}
+
+/// Tunneling on Windows (the Wintun adapter, the 0.0.0.0/0 routes, the WFP
+/// DNS-leak block) needs an elevated process — the desktop's VpnService.
+/// A buyer double-clicking the shortcut must never meet «Run as
+/// administrator»: the packaged launcher asks UAC ONCE and hands the session
+/// to its elevated twin. The 90 s marker window keeps a cancelled UAC from
+/// ping-ponging prompts — that launch runs unelevated, the connect button
+/// shows the honest admin message, and the manual relaunch button in Home
+/// still works.
+private fun maybeRelaunchElevated() {
+    if (!com.beevpn.win.AppPaths.isWindows()) return
+    if (com.beevpn.win.AppPaths.exeDir() == null) return            // dev `gradle run`
+    if (com.beevpn.win.engine.WindowsAdmin.isAdmin()) return        // already elevated
+    val marker = java.io.File(com.beevpn.win.AppPaths.baseDir, "uac-relaunch.flag")
+    val now = System.currentTimeMillis()
+    val last = runCatching { marker.readText().trim().toLongOrNull() ?: 0L }.getOrDefault(0L)
+    if (now - last < 90_000L) {
+        com.beevpn.win.engine.EngineProcess.logLine(
+            "[launch] UAC relaunch was just cancelled — running unelevated; tunneling will ask for «Run as administrator»",
+        )
+        return
+    }
+    runCatching { marker.writeText(now.toString()) }
+    if (com.beevpn.win.engine.WindowsAdmin.relaunchElevated()) {
+        com.beevpn.win.engine.EngineProcess.logLine("[launch] not elevated — handed off to the UAC-elevated twin")
+        kotlin.system.exitProcess(0)
     }
 }
 

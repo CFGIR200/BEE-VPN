@@ -204,6 +204,10 @@ object TunnelController {
             fail("موتورهای VPN (xray.exe / sing-box.exe / aether.exe) پیدا نشدند — بستهٔ رسمی (MSI یا ZIP قابل حمل) را نصب کن یا پوشهٔ cores را کنار exe بگذار")
             return
         }
+        // Elevated (packaged) runs ask Defender once to leave the cores dir
+        // alone — the anti-quarantine treaty that keeps the engines intact.
+        if (com.beevpn.win.engine.WindowsAdmin.isAdmin()) CoreExtractor.defenderExclusionOnce()
+
         val needsTun = AppPaths.isWindows()
         if (needsTun && !WindowsAdmin.isAdmin()) {
             fail("ساخت تونل VPN دسترسی مدیر می‌خواهد — برنامه را با «Run as administrator» باز کن")
@@ -220,38 +224,70 @@ object TunnelController {
             TunnelVerifier.log("baseline egress: ${baseline ?: "unknown"}")
 
             val ipv6 = withContext(Dispatchers.IO) { TunnelVerifier.ipv6Available() }
-            val exit = resolveExit()
+            val (exit, followers) = resolveExit()
             if (exit == null) return   // resolveExit already failed with a message
-            var verdict = when (exit) {
-                is Exit.Aether -> bringUpAether(exit.protocol, cores, baseline, ipv6)
-                is Exit.Node -> bringUpShardNode(exit.profile, cores, baseline, ipv6)
-                is Exit.Anytls -> bringUpAnytls(exit.profile, cores, baseline, ipv6)
-                is Exit.Manual -> bringUpManualWarp(exit.identity, cores, baseline, ipv6)
-                Exit.Tor -> bringUpTor(cores, baseline, ipv6)
+
+            // ── the attempt ladder ─────────────────────────────────────────
+            // The 1.6.2 field lesson (the «خروجی (نود) ترافیک پاس نمی‌دهد»
+            // reports): a node that passed the 12 s probe can be dead by the
+            // time the real tunnel verified. Android's ShardManager never
+            // gives up after ONE winner — it re-selects. So the ladder now
+            // walks every live race candidate before declaring failure, and
+            // AUTO then escalates to the engine rungs (WireGuard → MASQUE)
+            // exactly like the phone's Auto-Scan: a UDP-blocked carrier kills
+            // WG every time while MASQUE (HTTP/2 over TCP) still rides. Every
+            // attempt re-verifies with the SAME honest checks; a tunnel only
+            // earns «متصل است» from real bytes.
+            val attempts = ArrayDeque<Attempt>()
+            fun enqueueNode(e: Exit) {
+                when (e) {
+                    is Exit.Node -> attempts.add(Attempt.NodeTunnel(e.profile, anytls = false))
+                    is Exit.Anytls -> attempts.add(Attempt.NodeTunnel(e.profile, anytls = true))
+                    else -> {}
+                }
+            }
+            enqueueNode(exit)
+            followers.forEach { enqueueNode(it) }
+            if (mode == Mode.AUTO) {
+                when (exit) {
+                    is Exit.Node, is Exit.Anytls -> {
+                        attempts.add(Attempt.Engine(AetherEngine.Protocol.WG))
+                        attempts.add(Attempt.Engine(AetherEngine.Protocol.MASQUE))
+                    }
+                    is Exit.Aether -> if (exit.protocol == AetherEngine.Protocol.WG) {
+                        attempts.add(Attempt.Engine(AetherEngine.Protocol.MASQUE))
+                    }
+                    else -> {}
+                }
             }
 
-            // Android's Auto-Scan escalation, one rung per connect: the phone
-            // walks WireGuard → MASQUE on a first connect because a UDP-blocked
-            // carrier kills WG every time while MASQUE (HTTP/2 over TCP) still
-            // rides — and AUTO that resolved to a dead race winner falls back
-            // to the engine. Each escalation re-verifies with the SAME honest
-            // checks; a tunnel only earns «متصل است» from real bytes.
-            val rungQueue = ArrayDeque<AetherEngine.Protocol>()
-            when (exit) {
-                is Exit.Node, is Exit.Anytls -> { rungQueue.add(AetherEngine.Protocol.WG); rungQueue.add(AetherEngine.Protocol.MASQUE) }
-                is Exit.Aether -> if (exit.protocol == AetherEngine.Protocol.WG) rungQueue.add(AetherEngine.Protocol.MASQUE)
-                is Exit.Manual, Exit.Tor -> {}
-            }
-            while (verdict.message != null && mode == Mode.AUTO && rungQueue.isNotEmpty()) {
-                val rung = rungQueue.removeFirst()
-                TunnelVerifier.log("verification failed — escalating the Auto-Scan ladder to ${rung.id} (Android AUTO parity)")
-                killEnginesQuiet()
-                setState(State.PROVISIONING, if (rung == AetherEngine.Protocol.WG) "نود پاسخ نداد — تلاش با موتور WARP…" else "حالت دوم: تلاش با MASQUE…")
-                verdict = bringUpAether(rung, cores, baseline, ipv6)
+            var verdict: Verdict? = null
+            var earned = false
+            while (true) {
+                val attempt = attempts.removeFirstOrNull()
+                if (attempt == null) break
+                if (verdict != null) {
+                    // The previous attempt left engines/routes behind — a clean
+                    // slate per attempt, exactly like a fresh connect.
+                    killEnginesQuiet()
+                    setState(State.PROVISIONING, "تلاش مسیر بعدی…")
+                }
+                verdict = when (attempt) {
+                    is Attempt.NodeTunnel ->
+                        if (attempt.anytls) bringUpAnytls(attempt.profile, cores, baseline, ipv6)
+                        else bringUpShardNode(attempt.profile, cores, baseline, ipv6)
+                    is Attempt.Engine -> {
+                        TunnelVerifier.log(
+                            "verification failed — the ladder escalates to the ${attempt.protocol.id} engine (Android parity)",
+                        )
+                        bringUpAether(attempt.protocol, cores, baseline, ipv6)
+                    }
+                }
+                if (verdict.message == null) { earned = true; break }
             }
 
-            if (verdict.message != null) {
-                fail(verdict.message)
+            if (!earned) {
+                fail(verdict?.message ?: "اتصال برقرار نشد")
                 return
             }
 
@@ -700,36 +736,56 @@ object TunnelController {
         data object Tor : Exit()
     }
 
+    /// One rung of the connect ladder — a live race candidate (node tunnel)
+    /// or an aether engine protocol (AUTO's escalation rungs).
+    private sealed class Attempt {
+        data class NodeTunnel(val profile: ShardProfile, val anytls: Boolean) : Attempt()
+        data class Engine(val protocol: AetherEngine.Protocol) : Attempt()
+    }
+
+    /// How many live race candidates one connect may walk before the honest
+    /// failure message. The probe's 12 s budget is not a guarantee the node
+    /// still works 30 s later — the ladder absorbs that reality.
+    private val NODE_RETRY_CANDIDATES = 3
+
     @Volatile private var exitSummary: String = ""
 
     /// Picks the transport exactly like the phone:
-    /// AUTO = fastest live SHARD node → aether WARP fallback;
-    /// SHARD = the race winner (refuses to silently change transport);
+    /// AUTO = the fastest live SHARD nodes (walked in order) → aether WARP
+    ///     fallback;
+    /// SHARD = the race winners in order (same transport, next node — never a
+    ///     silent transport change);
     /// WARP/MASQUE/GOOL/MIM = the aether engine;
     /// MANUAL = the Advanced-tab wg-quick text.
-    private suspend fun resolveExit(): Exit? {
+    /// Returns the first exit plus the ranked follower exits for the ladder.
+    private suspend fun resolveExit(): Pair<Exit?, List<Exit>> {
         val poolEmpty = refreshPool().isEmpty()
         return when (mode) {
-            Mode.MANUAL -> manualExit()
-            Mode.WARP -> Exit.Aether(AetherEngine.Protocol.WG)
-            Mode.MASQUE -> Exit.Aether(AetherEngine.Protocol.MASQUE)
-            Mode.GOOL -> Exit.Aether(AetherEngine.Protocol.GOOL)
-            Mode.MIM -> Exit.Aether(AetherEngine.Protocol.MIM)
-            Mode.TOR -> Exit.Tor
-            Mode.TOR -> Exit.Tor
+            Mode.MANUAL -> when (val e = manualExit()) {
+                null -> null to emptyList()
+                else -> e to emptyList()
+            }
+            Mode.WARP -> Exit.Aether(AetherEngine.Protocol.WG) to emptyList()
+            Mode.MASQUE -> Exit.Aether(AetherEngine.Protocol.MASQUE) to emptyList()
+            Mode.GOOL -> Exit.Aether(AetherEngine.Protocol.GOOL) to emptyList()
+            Mode.MIM -> Exit.Aether(AetherEngine.Protocol.MIM) to emptyList()
+            Mode.TOR -> Exit.Tor to emptyList()
             Mode.AUTO -> {
-                if (poolEmpty) return Exit.Aether(AetherEngine.Protocol.WG)
-                val winner = runShardRace()
-                winner?.let { shardExit(it) } ?: Exit.Aether(AetherEngine.Protocol.WG)
+                if (poolEmpty) return Exit.Aether(AetherEngine.Protocol.WG) to emptyList()
+                val ranked = runShardRaceRanked()
+                if (ranked.isEmpty()) Exit.Aether(AetherEngine.Protocol.WG) to emptyList()
+                else ranked.map { shardExit(it) }.let { it.first() to it.drop(1) }
             }
             Mode.SHARD -> {
                 if (poolEmpty) {
                     fail("استخر SHARD خالی است — اتصال اینترنت را بررسی کن یا «به‌روزرسانی نودها» را بزن")
-                    return null
+                    return null to emptyList()
                 }
-                val winner = runShardRace()
-                    ?: return null   // runShardRace already failed with a message
-                shardExit(winner)
+                val ranked = runShardRaceRanked()
+                if (ranked.isEmpty()) {
+                    return null to emptyList()   // runShardRaceRanked already failed with a message
+                }
+                ranked.map { shardExit(it) }.let { it.first() to it.drop(1) }
             }
         }
     }
@@ -742,11 +798,12 @@ object TunnelController {
         }
 
     /// The Android node race over the live pool — real-request probes,
-    /// health-ranked and diversified. A pinned node is honored first, exactly
-    /// like the phone: probed alone, used when alive, otherwise the race
-    /// decides (AUTO) or the mode refuses (SHARD).
-    private suspend fun runShardRace(): ShardProfile? {
-        val cores = CoreExtractor.ensure() ?: return null
+    /// health-ranked and diversified, keeping the top NODE_RETRY_CANDIDATES
+    /// live nodes for the connect ladder. A pinned node is honored first,
+    /// exactly like the phone: probed alone, used when alive, otherwise the
+    /// race decides (AUTO) or the mode refuses (SHARD).
+    private suspend fun runShardRaceRanked(): List<ShardProfile> {
+        val cores = CoreExtractor.ensure() ?: return emptyList()
         val pool = refreshPool()
         val pinned = pinnedNodeKey?.let { key -> pool.firstOrNull { it.key() == key } }
         if (pinned != null) {
@@ -754,27 +811,27 @@ object TunnelController {
             val pinnedHit = withContext(Dispatchers.IO) {
                 ShardRace.raceSlice(listOf(pinned), cores)
             }
-            if (pinnedHit != null) return pinned
+            if (pinnedHit != null) return listOf(pinned)
             if (mode == Mode.SHARD) {
                 fail("نود انتخابی پاسخ نمی‌دهد — نود دیگری را در تب نودها انتخاب کن")
-                return null
+                return emptyList()
             }
         }
         return runCooledRace(pool, cores)
     }
 
-    private suspend fun runCooledRace(pool: List<ShardProfile>, cores: File): ShardProfile? {
+    private suspend fun runCooledRace(pool: List<ShardProfile>, cores: File): List<ShardProfile> {
         setState(State.PROVISIONING, "مسابقهٔ نودها (مثل اندروید)…")
-        var winner: ShardProfile? = null
+        var ranked: List<ShardProfile> = emptyList()
         withContext(Dispatchers.IO) {
-            winner = ShardRace.sweep(pool, cores) { progress ->
+            ranked = ShardRace.sweepRanked(pool, cores, maxKeep = NODE_RETRY_CANDIDATES) { progress ->
                 setState(State.PROVISIONING, progress)
             }
         }
-        if (winner == null && mode == Mode.SHARD) {
+        if (ranked.isEmpty() && mode == Mode.SHARD) {
             fail("هیچ نودی از استخر SHARD پاسخ نداد — اتصال اینترنت را بررسی کن یا «به‌روزرسانی نودها» را بزن")
         }
-        return winner
+        return ranked
     }
 
     private fun manualExit(): Exit? {

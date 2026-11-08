@@ -366,10 +366,24 @@ object ShardRace {
         pool: List<ShardProfile>,
         cores: File,
         onProgress: (String) -> Unit = {},
-    ): ShardProfile? {
+    ): ShardProfile? = sweepRanked(pool, cores, maxKeep = 1, onProgress = onProgress).firstOrNull()
+
+    /// The same sweep, keeping EVERY live candidate ordered fastest-first.
+    /// The 1.6.2 field lesson: a winner that passed the 12 s probe could be
+    /// dead by the time the real tunnel verified (or die the moment mux came
+    /// on) and the app failed the whole connect with
+    /// «خروجی (نود) ترافیک پاس نمی‌دهد» — the buyer's job to retry. Now the
+    /// caller walks the next-ranked nodes itself, exactly the way the phone's
+    /// ShardManager re-selects on the next attempt.
+    fun sweepRanked(
+        pool: List<ShardProfile>,
+        cores: File,
+        maxKeep: Int = 5,
+        onProgress: (String) -> Unit = {},
+    ): List<ShardProfile> {
         ShardHealth.prune(pool)
         val ranked = diversify(ShardHealth.rank(pool))
-        if (ranked.isEmpty()) return null
+        if (ranked.isEmpty()) return emptyList()
         val allSuccess = mutableListOf<Pair<ShardProfile, Int>>()
         var tested = 0
         var bestLatency = Int.MAX_VALUE
@@ -393,7 +407,6 @@ object ShardRace {
                 (tested >= EARLY_EXIT_MIN_TESTED || bestLatency < EARLY_EXIT_BEST_MS)
             ) break
         }
-        if (allSuccess.isEmpty()) return null
-        return allSuccess.minByOrNull { it.second }?.first
+        return allSuccess.sortedBy { it.second }.take(maxKeep).map { it.first }
     }
 }
