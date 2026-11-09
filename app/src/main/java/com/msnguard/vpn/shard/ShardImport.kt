@@ -19,8 +19,6 @@ internal object ShardImport {
         for (raw in distinctReversed) {
             val line = raw.trim()
             if (line.isEmpty() || line.startsWith("#")) continue
-            // Skip vmess json lines — not in SHARD pool
-            if (line.startsWith("vmess://", ignoreCase = true)) continue // vmess not in SHARD pool
             val p = parseOne(line) ?: continue
             // The publisher ships "Sni-Spoofing" variants that dial
             // 127.0.0.1:<port> — they only answer behind a LOCAL forwarder this
@@ -37,6 +35,7 @@ internal object ShardImport {
     fun parseOne(line: String): ShardProfile? = try {
         when {
             line.startsWith(ShardType.VLESS.scheme, ignoreCase = true) -> VlessFmt.parse(line)
+            line.startsWith(ShardType.VMESS.scheme, ignoreCase = true) -> VmessFmt.parse(line)
             line.startsWith(ShardType.TROJAN.scheme, ignoreCase = true) -> TrojanFmt.parse(line)
             line.startsWith(ShardType.SHADOWSOCKS.scheme, ignoreCase = true) -> ShadowsocksFmt.parse(line)
             line.startsWith("socks://", ignoreCase = true) || line.startsWith("socks5://", ignoreCase = true) -> SocksFmt.parse(line)
