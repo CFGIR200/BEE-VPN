@@ -536,9 +536,11 @@ object TunnelController {
         setState(State.PROVISIONING, "ثبت‌نام — مسابقه نودها…")
         var winner: ShardProfile? = null
         withContext(Dispatchers.IO) {
-            winner = ShardRace.sweep(pool, cores, cancelled = { userDisconnect }) { progress ->
-                setState(State.PROVISIONING, "ثبت‌نام — $progress")
-            }
+            winner = ShardRace.sweep(
+                pool, cores,
+                onProgress = { progress -> setState(State.PROVISIONING, "ثبت‌نام — $progress") },
+                cancelled = { userDisconnect },
+            )
         }
         val node = winner ?: run {
             TunnelVerifier.log("SHARD-backed registration skipped — no node answered")
