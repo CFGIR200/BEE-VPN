@@ -122,9 +122,13 @@ class AetherEngineTest {
         val env = AetherEngine.registerEnv(AetherEngine.Protocol.MASQUE)
         assertEquals("masque", env["AETHER_REGISTER"])
         assertEquals(AetherEngine.EMBEDDED_API_ECH, env["AETHER_API_ECH"])
+        // The standalone engine (the binary Windows runs) reads the ECH key
+        // by AETHER_ECH — the FFI's AETHER_API_ECH alone is invisible to it,
+        // so both names ride along.
+        assertEquals(AetherEngine.EMBEDDED_API_ECH, env["AETHER_ECH"])
         assertEquals(AetherEngine.configPath().absolutePath, env["AETHER_CONFIG"])
         // Nothing else: no tunnel-carrying keys, no scanner, no noize.
-        assertEquals(4, env.size)
+        assertEquals(5, env.size)
     }
 
     @Test
@@ -135,7 +139,7 @@ class AetherEngineTest {
             AetherEngine.Protocol.GOOL,
             upstream = "socks5://127.0.0.1:${EngineConfig.PROVISION_SOCKS_PORT}",
         )
-        assertEquals("gool", env["AETHER_REGISTER"])
+        assertEquals("gool-classic", env["AETHER_REGISTER"])
         assertEquals("socks5://127.0.0.1:1824", env["AETHER_UPSTREAM"])
     }
 
