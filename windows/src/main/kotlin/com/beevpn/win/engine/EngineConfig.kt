@@ -15,6 +15,11 @@ object EngineConfig {
     /// The one SOCKS port the app uses, everywhere — same number as CoreConfig.kt.
     const val SOCKS_PORT = 1819
 
+    /// The local HTTP proxy port — served only when TUN is OFF (proxy mode):
+    /// the system proxy (WinINET) points here, because browsers and most
+    /// desktop apps honour an HTTP proxy far more reliably than a SOCKS one.
+    const val HTTP_PROXY_PORT = 1818
+
     /// The anytls sidecar's listener — same slot plan as Android (1826).
     const val ANYTLS_SIDECAR_PORT = 1826
 
@@ -52,6 +57,7 @@ object EngineConfig {
         fragmentOnDirect: Boolean,
         shardParity: Boolean = false,
         includeSocksIn: Boolean = true,
+        includeHttpIn: Boolean = false,
     ): JSONObject {
         val root = JSONObject()
         root.put("log", JSONObject().put("loglevel", "warning"))
@@ -105,6 +111,16 @@ object EngineConfig {
                 ),
         )
         if (!includeSocksIn) inbounds.remove(inbounds.length() - 1)
+        if (includeHttpIn) {
+            inbounds.put(
+                JSONObject()
+                    .put("tag", "http-in")
+                    .put("listen", "127.0.0.1")
+                    .put("port", HTTP_PROXY_PORT)
+                    .put("protocol", "http")
+                    .put("settings", JSONObject()),
+            )
+        }
         root.put("inbounds", inbounds)
 
         val outbounds = JSONArray()

@@ -9,9 +9,7 @@ import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicReference
 
 /// The node race — the desktop port of Android's ShardManager.start() sweep:
 /// health-ranked, endpoint-diversified slices of the pool probed through a
@@ -38,6 +36,17 @@ object ShardRace {
     const val EARLY_EXIT_SUCCESSES = 5
     const val EARLY_EXIT_MIN_TESTED = 60
     const val EARLY_EXIT_BEST_MS = 800
+
+    /// Android's MAX_RACE_SLICES = 3 — the sweep is BOUNDED. One slice can
+    /// now yield every success the early exit needs (see [raceSlice]), so on
+    /// a healthy pool the whole race is one probe round, not five.
+    const val MAX_RACE_SLICES = 3
+
+    /// After the first success lands, keep probing this much longer to
+    /// harvest the remaining candidates' answers — the ladder needs a few
+    /// live nodes, and one slice that answers 5 times is cheaper than five
+    /// slices that answer once. Bounded by [RACE_BUDGET_MS] regardless.
+    const val HARVEST_GRACE_MS = 2_500
 
     // ------------------------------------------------------------ probe
 
@@ -270,14 +279,21 @@ object ShardRace {
     }
 
     /// One slice race: launch the probe process(es), fire one probe thread per
-    /// candidate, first PASS wins the latch. Returns (winner, elapsedMs) —
-    /// null when the slice came up empty inside the budget.
+    /// candidate, collect EVERY success that lands inside the window — first
+    /// PASS opens the harvest, the remaining candidates keep answering for
+    /// [HARVEST_GRACE_MS] more so one healthy slice can feed the whole ladder
+    /// (the 1.7.3 field report: connect was slow, and the old slice stopped
+    /// at the first answer and threw the rest away). Returns the successes
+    /// sorted fastest-first — empty when the slice came up blank inside the
+    /// budget. `cancelled` is polled between waits: a cancelled connect
+    /// abandons the slice immediately instead of grinding to the budget.
     fun raceSlice(
         candidates: List<ShardProfile>,
         cores: File,
         onProgress: (String) -> Unit = {},
-    ): Pair<ShardProfile, Int>? {
-        if (candidates.isEmpty()) return null
+        cancelled: () -> Boolean = { false },
+    ): List<Pair<ShardProfile, Int>> {
+        if (candidates.isEmpty() || cancelled()) return emptyList()
         val xrayCandidates = candidates.filter { ShardOutboundBuilder.supports(it) }
         val anytlsCandidates = candidates.filter { it.configType == ShardType.ANYTLS }
         val portOf = HashMap<ShardProfile, Int>(candidates.size * 2)
@@ -306,43 +322,61 @@ object ShardRace {
             sbProc.onLine = { EngineProcess.logLine("[sing-box-probe] $it") }
             sbProc.start()
         }
-        if (xrayProc == null && sbProc == null) return null
+        if (xrayProc == null && sbProc == null) return emptyList()
 
         try {
             // Listeners bind a moment after exec — wait for the FIRST port of
             // each engine (4 s budget, Android awaitPortUp).
             val readyX = xrayProc == null || awaitPortUp(PROBE_BASE_PORT) { xrayProc.isAlive }
             val readyS = sbProc == null || awaitPortUp(portOf[anytlsCandidates.first()] ?: ANYTLS_PROBE_BASE_PORT) { sbProc.isAlive }
-            if (!readyX || !readyS) {
+            if (!readyX || !readyS || cancelled()) {
                 onProgress("probe listeners did not bind")
-                return null
+                return emptyList()
             }
 
-            val winner = AtomicReference<ShardProfile?>(null)
-            val winnerLatency = AtomicInteger(0)
-            val latch = java.util.concurrent.CountDownLatch(1)
+            val successes = java.util.Collections.synchronizedList(
+                mutableListOf<Pair<ShardProfile, Int>>(),
+            )
+            val pending = AtomicInteger(candidates.size)
             val pool = Executors.newFixedThreadPool(candidates.size.coerceAtMost(RACE_WIDTH))
             candidates.forEach { node ->
                 pool.execute {
-                    if (winner.get() != null) return@execute
-                    val started = System.currentTimeMillis()
-                    val (verdict, _) = probeOnceDetailed(portOf.getValue(node), PROBE_TIMEOUT_MS)
-                    val elapsed = (System.currentTimeMillis() - started).toInt()
-                    if (verdict == ProbeVerdict.PASS) {
-                        ShardHealth.recordSuccess(node, elapsed)
-                        if (winner.compareAndSet(null, node)) {
-                            winnerLatency.set(elapsed)
-                            latch.countDown()
+                    try {
+                        val started = System.currentTimeMillis()
+                        val (verdict, _) = probeOnceDetailed(portOf.getValue(node), PROBE_TIMEOUT_MS)
+                        val elapsed = (System.currentTimeMillis() - started).toInt()
+                        if (verdict == ProbeVerdict.PASS) {
+                            ShardHealth.recordSuccess(node, elapsed)
+                            successes.add(node to elapsed)
+                        } else {
+                            ShardHealth.recordFailure(node)
                         }
-                    } else {
-                        ShardHealth.recordFailure(node)
+                    } finally {
+                        pending.decrementAndGet()
                     }
                 }
             }
-            latch.await(RACE_BUDGET_MS.toLong(), TimeUnit.MILLISECONDS)
+
+            // Wait for the first success (or the whole slice to die), then
+            // one grace window to harvest the rest, then stop — the probe
+            // processes are killed in the finally below either way.
+            val budgetEnd = System.currentTimeMillis() + RACE_BUDGET_MS
+            while (successes.isEmpty() && pending.get() > 0 && System.currentTimeMillis() < budgetEnd) {
+                if (cancelled()) break
+                Thread.sleep(40)
+            }
+            if (successes.isNotEmpty()) {
+                val harvestEnd = System.currentTimeMillis() + HARVEST_GRACE_MS
+                while (pending.get() > 0 &&
+                    System.currentTimeMillis() < harvestEnd &&
+                    System.currentTimeMillis() < budgetEnd
+                ) {
+                    if (cancelled()) break
+                    Thread.sleep(40)
+                }
+            }
             pool.shutdownNow()
-            val chosen = winner.get() ?: return null
-            return chosen to winnerLatency.get()
+            return successes.sortedBy { it.second }
         } finally {
             sbProc?.stop()
             xrayProc?.stop()
@@ -360,13 +394,17 @@ object ShardRace {
         return false
     }
 
-    /// The full sweep — ranked, diversified, sliced; the least-ping winner
-    /// across all slices with Android's early-exit rule. Null = dead pool.
+    /// The full sweep — ranked, diversified, sliced; every slice's successes
+    /// pooled together, the ladder gets the whole live set fastest-first.
+    /// Bounded at [MAX_RACE_SLICES] like the phone (Android MAX_RACE_SLICES
+    /// = 3): with the new multi-publisher pool this can no longer grind
+    /// through 13 slices before anyone connects. Null = dead pool.
     fun sweep(
         pool: List<ShardProfile>,
         cores: File,
         onProgress: (String) -> Unit = {},
-    ): ShardProfile? = sweepRanked(pool, cores, maxKeep = 1, onProgress = onProgress).firstOrNull()
+        cancelled: () -> Boolean = { false },
+    ): ShardProfile? = sweepRanked(pool, cores, maxKeep = 1, onProgress = onProgress, cancelled = cancelled).firstOrNull()
 
     /// The same sweep, keeping EVERY live candidate ordered fastest-first.
     /// The 1.6.2 field lesson: a winner that passed the 12 s probe could be
@@ -380,6 +418,7 @@ object ShardRace {
         cores: File,
         maxKeep: Int = 5,
         onProgress: (String) -> Unit = {},
+        cancelled: () -> Boolean = { false },
     ): List<ShardProfile> {
         ShardHealth.prune(pool)
         val ranked = diversify(ShardHealth.rank(pool))
@@ -388,19 +427,22 @@ object ShardRace {
         var tested = 0
         var bestLatency = Int.MAX_VALUE
         var sliceIdx = 0
-        while (sliceIdx * RACE_WIDTH < ranked.size) {
+        while (sliceIdx * RACE_WIDTH < ranked.size && sliceIdx < MAX_RACE_SLICES) {
+            if (cancelled()) return emptyList()
             val candidates = ranked.drop(sliceIdx * RACE_WIDTH).take(RACE_WIDTH)
             if (candidates.isEmpty()) break
             onProgress("بررسی نودها ${tested + 1}–${tested + candidates.size} از ${ranked.size}")
             val before = System.currentTimeMillis()
-            val sliceWinner = raceSlice(candidates, cores, onProgress)
+            val sliceSuccesses = raceSlice(candidates, cores, onProgress, cancelled)
             val elapsed = (System.currentTimeMillis() - before).toInt()
             tested += candidates.size
-            if (sliceWinner != null) {
+            if (sliceSuccesses.isNotEmpty()) {
                 // The slice's wall-clock time to first success is the race
                 // metric across slices (Android measures the same thing).
-                allSuccess.add(sliceWinner.first to elapsed)
-                if (elapsed < bestLatency) bestLatency = elapsed
+                allSuccess.addAll(sliceSuccesses)
+                if (sliceSuccesses.first().second < bestLatency) {
+                    bestLatency = sliceSuccesses.first().second
+                }
             }
             sliceIdx++
             if (allSuccess.size >= EARLY_EXIT_SUCCESSES &&

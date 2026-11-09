@@ -27,6 +27,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -88,6 +89,16 @@ object TunnelController {
         get() = SecureStore.get("engine.fragment") == "1"
         set(v) { SecureStore.put("engine.fragment", if (v) "1" else "0") }
 
+    /// The TUN switch — the user's ask. ON (default) is the full tunnel:
+    /// Wintun adapter, system default route, every app covered. OFF is proxy
+    /// mode: the engine serves a local SOCKS 1819 + HTTP 1818 and the system
+    /// proxy (WinINET) points at 1818 — no Wintun, no routes, and NO admin
+    /// rights needed, which is its own quiet win for locked-down machines.
+    /// A change takes effect on the next connect.
+    var tunEnabled: Boolean
+        get() = SecureStore.get("engine.tun") != "0"
+        set(v) { SecureStore.put("engine.tun", if (v) "1" else "0") }
+
     var pinnedNodeKey: String?
         get() = SecureStore.get("node.pinned")?.takeIf { it.isNotEmpty() }
         set(v) { SecureStore.put("node.pinned", v ?: "") }
@@ -114,9 +125,9 @@ object TunnelController {
         lastProbed = results
     }
 
-    private var xray: EngineProcess? = null
-    private var aether: EngineProcess? = null
-    private var sidecar: EngineProcess? = null
+    @Volatile private var xray: EngineProcess? = null
+    @Volatile private var aether: EngineProcess? = null
+    @Volatile private var sidecar: EngineProcess? = null
 
     fun init() {
         refreshPool()
@@ -161,9 +172,40 @@ object TunnelController {
         scope.launch { mutex.withLock { withContext(Dispatchers.IO) { stopEngines("قطع اتصال") } } }
     }
 
+    /// The user tapped «لغو» while the dial is still spinning. The connect
+    /// coroutine holds the mutex for the WHOLE ladder — waiting on it here
+    /// would answer the tap only after the connect finished, which is the
+    /// exact bug this tap exists to fix. So the engines are killed directly
+    /// (EngineProcess.stop is safe from any thread, and the fields are
+    /// volatile), and the in-flight connect observes `userDisconnect` at its
+    /// next checkpoint ([abortIfCancelled]) and lands on DISCONNECTED
+    /// itself — a cancel never shows the red FAILED face.
+    fun cancelConnect() {
+        when (state) {
+            State.PROVISIONING, State.STARTING, State.VERIFYING -> {
+                userDisconnect = true
+                watchdogJob?.cancel()
+                reconnectJob?.cancel()
+                setState(State.STOPPING, "لغو اتصال…")
+                scope.launch(Dispatchers.IO) { killEnginesQuiet() }
+            }
+            else -> {}
+        }
+    }
+
     private fun setState(s: State, text: String) {
         state = s
         statusText = text
+    }
+
+    /// The cancel checkpoint — every long step of the connect ladder walks
+    /// through this on its way out. True means the user tapped «لغو» (or
+    /// «قطع»): the engines are already dead, the state lands on
+    /// DISCONNECTED, and the ladder stops where it stands.
+    private fun abortIfCancelled(): Boolean {
+        if (!userDisconnect) return false
+        stopEngines("لغو شد")
+        return true
     }
 
     private fun fail(message: String) {
@@ -176,9 +218,13 @@ object TunnelController {
     }
 
     private suspend fun connectBlocking() {
-        if (state == State.CONNECTED || state == State.STARTING ||
-            state == State.PROVISIONING || state == State.VERIFYING
-        ) return
+        // The only guard needed: never double-connect while a tunnel is up.
+        // Everything else is serialized by the mutex — including the
+        // auto-reconnect ladder, which arrives here with the state left in
+        // PROVISIONING by its own countdown and MUST NOT be bounced: the old
+        // guard rejected exactly that, so a dead tunnel stayed dead while the
+        // status kept promising «اتصال مجدد خودکار» forever.
+        if (state == State.CONNECTED) return
         lastError = null
 
         // Android clears the cached gateway after two failed attempts — here
@@ -208,24 +254,26 @@ object TunnelController {
         // alone — the anti-quarantine treaty that keeps the engines intact.
         if (com.beevpn.win.engine.WindowsAdmin.isAdmin()) CoreExtractor.defenderExclusionOnce()
 
-        val needsTun = AppPaths.isWindows()
+        // TUN off = proxy mode = no Wintun adapter, no routes — no admin needed.
+        val needsTun = AppPaths.isWindows() && tunEnabled
         if (needsTun && !WindowsAdmin.isAdmin()) {
-            fail("ساخت تونل VPN دسترسی مدیر می‌خواهد — برنامه را با «Run as administrator» باز کن")
+            fail("ساخت تونل VPN دسترسی مدیر می‌خواهد — برنامه را با «Run as administrator» باز کن، یا TUN را خاموش کن (حالت پروکسی)")
             return
         }
 
         try {
-            // Pre-connect baseline of the bare ISP egress — the yardstick the
-            // post-connect system probe is measured against. Nullable: when
-            // the trace itself is blocked the ladder falls back to the
-            // route + engine checks only.
-            setState(State.PROVISIONING, "اندازه‌گیری خط پایه…")
-            val baseline = withContext(Dispatchers.IO) { TunnelVerifier.traceIpDirect(6_000L) }
-            TunnelVerifier.log("baseline egress: ${baseline ?: "unknown"}")
-
-            val ipv6 = withContext(Dispatchers.IO) { TunnelVerifier.ipv6Available() }
+            // Pre-connect baseline of the bare ISP egress + the IPv6 probe
+            // ride IN PARALLEL with the exit resolution — the node race is
+            // the long pole of every connect, and these two probes cost
+            // nothing alongside it instead of ~8 s stacked in front of it.
+            val baselineDeferred = scope.async(Dispatchers.IO) { TunnelVerifier.traceIpDirect(6_000L) }
+            val ipv6Deferred = scope.async(Dispatchers.IO) { TunnelVerifier.ipv6Available() }
             val (exit, followers) = resolveExit()
             if (exit == null) return   // resolveExit already failed with a message
+            if (abortIfCancelled()) return
+            val baseline = baselineDeferred.await()
+            TunnelVerifier.log("baseline egress: ${baseline ?: "unknown"}")
+            val ipv6 = ipv6Deferred.await()
 
             // ── the attempt ladder ─────────────────────────────────────────
             // The 1.6.2 field lesson (the «خروجی (نود) ترافیک پاس نمی‌دهد»
@@ -264,6 +312,7 @@ object TunnelController {
             var verdict: Verdict? = null
             var earned = false
             while (true) {
+                if (abortIfCancelled()) return
                 val attempt = attempts.removeFirstOrNull()
                 if (attempt == null) break
                 if (verdict != null) {
@@ -287,13 +336,32 @@ object TunnelController {
             }
 
             if (!earned) {
-                fail(verdict?.message ?: "اتصال برقرار نشد")
+                if (userDisconnect) {
+                    // A cancel that landed mid-verify — the honest DISCONNECTED
+                    // face, never the red FAILED one.
+                    stopEngines("لغو شد")
+                } else {
+                    fail(verdict?.message ?: "اتصال برقرار نشد")
+                }
                 return
             }
+            if (abortIfCancelled()) return
+
+            // The last-winner memory: the node that just earned «متصل است» is
+            // the FIRST thing the next connect probes (runShardRaceRanked's
+            // fast path) — the biggest connect-speed lever there is.
+            val winnerProfile = (exit as? Exit.Node)?.profile ?: (exit as? Exit.Anytls)?.profile
+            winnerProfile?.let { SecureStore.put("shard.lastWinner", it.key()) }
 
             connectedSince = System.currentTimeMillis() / 1000
             lastExitSummary = exitSummary
-            setState(State.CONNECTED, "متصل است — $exitSummary")
+            // Proxy mode owns the system proxy — that pointer IS the tunnel's
+            // presence on this machine. TUN mode touches nothing.
+            val viaProxy = !tunEnabled && WindowsAdmin.setSystemProxy(EngineConfig.HTTP_PROXY_PORT)
+            setState(
+                State.CONNECTED,
+                "متصل است — $exitSummary" + if (viaProxy) " — پروکسی سیستم" else "",
+            )
             startWatchdog()
         } catch (e: Exception) {
             fail("خطای غیرمنتظره: ${e.message ?: e.javaClass.simpleName}")
@@ -348,11 +416,12 @@ object TunnelController {
         // No xray socks inbound: the core owns 1819 exactly like the phone.
         setState(State.STARTING, "ساخت تونل سیستم…")
         val bridge = EngineConfig.build(
-            useTun = true,
+            useTun = tunEnabled,
             ipv6Available = ipv6,
             exitOutbound = EngineConfig.aetherBridgeExit(),
             fragmentOnDirect = false,
             includeSocksIn = false,
+            includeHttpIn = !tunEnabled,
         )
         val bridgeFile = File(AppPaths.runDir, "xray.json")
         bridgeFile.writeText(bridge.toString(2))
@@ -467,7 +536,7 @@ object TunnelController {
         setState(State.PROVISIONING, "ثبت‌نام — مسابقه نودها…")
         var winner: ShardProfile? = null
         withContext(Dispatchers.IO) {
-            winner = ShardRace.sweep(pool, cores) { progress ->
+            winner = ShardRace.sweep(pool, cores, cancelled = { userDisconnect }) { progress ->
                 setState(State.PROVISIONING, "ثبت‌نام — $progress")
             }
         }
@@ -569,11 +638,12 @@ object TunnelController {
 
         setState(State.STARTING, "ساخت تونل سیستم…")
         val bridge = EngineConfig.build(
-            useTun = true,
+            useTun = tunEnabled,
             ipv6Available = ipv6,
             exitOutbound = EngineConfig.aetherBridgeExit(),
             fragmentOnDirect = false,
             includeSocksIn = false,
+            includeHttpIn = !tunEnabled,
         )
         val bridgeFile = File(AppPaths.runDir, "xray.json")
         bridgeFile.writeText(bridge.toString(2))
@@ -611,11 +681,12 @@ object TunnelController {
     ): Verdict {
         setState(State.STARTING, "راه‌اندازی موتور…")
         val xrayConfig = EngineConfig.build(
-            useTun = true,
+            useTun = tunEnabled,
             ipv6Available = ipv6,
             exitOutbound = EngineConfig.nodeExit(profile),
             fragmentOnDirect = fragmentOnDirect,
             shardParity = true,
+            includeHttpIn = !tunEnabled,
         )
         val xrayConfigFile = File(AppPaths.runDir, "xray.json")
         xrayConfigFile.writeText(xrayConfig.toString(2))
@@ -630,11 +701,12 @@ object TunnelController {
     ): Verdict {
         setState(State.STARTING, "راه‌اندازی موتور…")
         val xrayConfig = EngineConfig.build(
-            useTun = true,
+            useTun = tunEnabled,
             ipv6Available = ipv6,
             exitOutbound = EngineConfig.anytlsExit(),
             fragmentOnDirect = fragmentOnDirect,
             shardParity = true,
+            includeHttpIn = !tunEnabled,
         )
         val xrayConfigFile = File(AppPaths.runDir, "xray.json")
         xrayConfigFile.writeText(xrayConfig.toString(2))
@@ -655,10 +727,11 @@ object TunnelController {
     ): Verdict {
         setState(State.STARTING, "راه‌اندازی موتور…")
         val xrayConfig = EngineConfig.build(
-            useTun = true,
+            useTun = tunEnabled,
             ipv6Available = ipv6,
             exitOutbound = EngineConfig.warpExit(identity),
             fragmentOnDirect = fragmentOnDirect,
+            includeHttpIn = !tunEnabled,
         )
         val xrayConfigFile = File(AppPaths.runDir, "xray.json")
         xrayConfigFile.writeText(xrayConfig.toString(2))
@@ -809,12 +882,32 @@ object TunnelController {
         if (pinned != null) {
             setState(State.PROVISIONING, "بررسی نود منتخب…")
             val pinnedHit = withContext(Dispatchers.IO) {
-                ShardRace.raceSlice(listOf(pinned), cores)
+                ShardRace.raceSlice(listOf(pinned), cores, cancelled = { userDisconnect })
             }
-            if (pinnedHit != null) return listOf(pinned)
+            if (pinnedHit.isNotEmpty()) return listOf(pinned)
             if (mode == Mode.SHARD) {
                 fail("نود انتخابی پاسخ نمی‌دهد — نود دیگری را در تب نودها انتخاب کن")
                 return emptyList()
+            }
+        }
+        // The last-winner fast path — the single biggest connect-speed lever:
+        // the node that earned «متصل است» last time is probed ALONE, one
+        // probe round instead of the full sweep, so a healthy pool reconnects
+        // in seconds. A dead last winner is forgotten and the race decides.
+        if (pinned == null) {
+            val lastKey = SecureStore.get("shard.lastWinner")?.takeIf { it.isNotEmpty() }
+            val last = lastKey?.let { key -> pool.firstOrNull { it.key() == key } }
+            if (last != null) {
+                setState(State.PROVISIONING, "بررسی آخرین نود سالم…")
+                val hit = withContext(Dispatchers.IO) {
+                    ShardRace.raceSlice(listOf(last), cores, cancelled = { userDisconnect })
+                }
+                if (hit.isNotEmpty()) {
+                    TunnelVerifier.log("last-winner fast path — ${last.displayLabel()} still alive")
+                    return listOf(last)
+                }
+                TunnelVerifier.log("last-winner fast path missed — the full race decides")
+                SecureStore.put("shard.lastWinner", "")
             }
         }
         return runCooledRace(pool, cores)
@@ -824,9 +917,12 @@ object TunnelController {
         setState(State.PROVISIONING, "مسابقهٔ نودها (مثل اندروید)…")
         var ranked: List<ShardProfile> = emptyList()
         withContext(Dispatchers.IO) {
-            ranked = ShardRace.sweepRanked(pool, cores, maxKeep = NODE_RETRY_CANDIDATES) { progress ->
-                setState(State.PROVISIONING, progress)
-            }
+            ranked = ShardRace.sweepRanked(
+                pool, cores,
+                maxKeep = NODE_RETRY_CANDIDATES,
+                onProgress = { progress -> setState(State.PROVISIONING, progress) },
+                cancelled = { userDisconnect },
+            )
         }
         if (ranked.isEmpty() && mode == Mode.SHARD) {
             fail("هیچ نودی از استخر SHARD پاسخ نداد — اتصال اینترنت را بررسی کن یا «به‌روزرسانی نودها» را بزن")
@@ -853,20 +949,36 @@ object TunnelController {
     /// flow through the engine's SOCKS to the far end, and (3) the SYSTEM's
     /// own egress differs from the pre-connect baseline. Anything else is an
     /// honest, actionable Persian failure — never a fake green dot.
-    private fun verifyTunnelUp(baseline: String?, warpExit: Boolean): Verdict {
-        // 1) default route through the TUN — xray installs it at startup;
-        //    give it 15 s, then win the metric race ourselves.
-        var routeUp = false
-        val deadline = System.currentTimeMillis() + 15_000
-        while (System.currentTimeMillis() < deadline) {
-            if (TunnelVerifier.tunRouteWins()) { routeUp = true; break }
-            Thread.sleep(600)
-        }
-        if (!routeUp) {
-            TunnelVerifier.log("xray route not winning the metric race — installing fallback default route")
-            if (!TunnelVerifier.ensureTunRoute()) {
-                return Verdict("تونل ساخته شد اما مسیر پیش‌فرض ویندوز از آن عبور نمی‌کند — «گزارش پیشرفته» را ببین")
+    ///
+    /// Proxy mode (TUN off) earns it differently: there is no adapter and no
+    /// route — (1) cannot exist, and (3) is EXPECTED to equal the baseline,
+    /// because only proxy-aware apps ride the tunnel. The engine e2e (2) is
+    /// the whole contract. `cancelled` lets a mid-verify «لغو» answer within
+    /// one poll instead of after the full budget.
+    private fun verifyTunnelUp(
+        baseline: String?,
+        warpExit: Boolean,
+        tun: Boolean = tunEnabled,
+        cancelled: () -> Boolean = { userDisconnect },
+    ): Verdict {
+        if (tun) {
+            // 1) default route through the TUN — xray installs it at startup;
+            //    give it 15 s, then win the metric race ourselves.
+            var routeUp = false
+            val deadline = System.currentTimeMillis() + 15_000
+            while (System.currentTimeMillis() < deadline) {
+                if (cancelled()) return Verdict("لغو شد")
+                if (TunnelVerifier.tunRouteWins()) { routeUp = true; break }
+                Thread.sleep(400)
             }
+            if (!routeUp) {
+                TunnelVerifier.log("xray route not winning the metric race — installing fallback default route")
+                if (!TunnelVerifier.ensureTunRoute()) {
+                    return Verdict("تونل ساخته شد اما مسیر پیش‌فرض ویندوز از آن عبور نمی‌کند — «گزارش پیشرفته» را ببین")
+                }
+            }
+        } else {
+            TunnelVerifier.log("proxy mode — route/system checks skipped, the engine e2e is the contract")
         }
 
         // 2) engine end-to-end: bytes through SOCKS 1819 reach the far end.
@@ -877,13 +989,14 @@ object TunnelController {
         //    must not be declared dead because one host was unlucky.
         var exitIp: String? = null
         repeat(2) {
-            if (exitIp != null) return@repeat
+            if (exitIp != null || cancelled()) return@repeat
             exitIp = TunnelVerifier.traceIpViaSocks(AetherEngine.SOCKS_PORT, 15_000)
-            if (exitIp == null && TunnelVerifier.tunnel204ViaSocks(AetherEngine.SOCKS_PORT, 15_000)) {
+            if (exitIp == null && !cancelled() && TunnelVerifier.tunnel204ViaSocks(AetherEngine.SOCKS_PORT, 15_000)) {
                 exitIp = "/live"
             }
         }
         if (exitIp == null) {
+            if (cancelled()) return Verdict("لغو شد")
             TunnelVerifier.log("engine egress: DEAD (no trace answer through SOCKS)")
             return if (warpExit) {
                 Verdict(
@@ -898,15 +1011,18 @@ object TunnelController {
 
         // 3) system end-to-end: the machine itself must leave through the
         //    tunnel — same egress as the bare ISP means routing failed even
-        //    though the engine is healthy.
-        if (baseline != null) {
-            val sysIp = TunnelVerifier.traceIpDirect(12_000)
-            TunnelVerifier.log("system egress: ${sysIp ?: "unknown"} (baseline $baseline)")
-            if (sysIp == baseline) {
-                return Verdict("تونل سالم است اما ترافیک سیستم از آن عبور نمی‌کند (خروجی سیستم = خروجی قبل از اتصال) — فایروال یا آنتی‌ویروس را بررسی کن")
+        //    though the engine is healthy. TUN mode only.
+        if (tun) {
+            if (baseline != null) {
+                if (cancelled()) return Verdict("لغو شد")
+                val sysIp = TunnelVerifier.traceIpDirect(12_000)
+                TunnelVerifier.log("system egress: ${sysIp ?: "unknown"} (baseline $baseline)")
+                if (sysIp == baseline) {
+                    return Verdict("تونل سالم است اما ترافیک سیستم از آن عبور نمی‌کند (خروجی سیستم = خروجی قبل از اتصال) — فایروال یا آنتی‌ویروس را بررسی کن")
+                }
+            } else {
+                TunnelVerifier.log("baseline unknown — system probe skipped (engine e2e already passed)")
             }
-        } else {
-            TunnelVerifier.log("baseline unknown — system probe skipped (engine e2e already passed)")
         }
         return Verdict(null)
     }
@@ -1031,6 +1147,9 @@ object TunnelController {
 
     private fun stopEngines(caption: String?) {
         killEnginesQuiet()
+        // Proxy mode owns the system proxy — every teardown restores whatever
+        // the user had before the connect. No-op when TUN mode never set it.
+        WindowsAdmin.clearSystemProxy()
         connectedSince = 0
         exitSummary = ""
         setState(State.DISCONNECTED, caption ?: "قطع است")

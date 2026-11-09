@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.beevpn.win.faNum
 import com.beevpn.win.daysLeftHuman
+import com.beevpn.win.engine.EngineConfig
 import com.beevpn.win.license.LicenseManager
 import com.beevpn.win.tunnel.TunnelController
 
@@ -63,7 +64,16 @@ fun HomeView(onOpenProfile: () -> Unit = {}) {
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Orb(state, onToggle = {
-                if (state == TunnelController.State.CONNECTED) TunnelController.disconnect() else TunnelController.connect()
+                when (state) {
+                    TunnelController.State.CONNECTED -> TunnelController.disconnect()
+                    TunnelController.State.STARTING, TunnelController.State.PROVISIONING,
+                    TunnelController.State.VERIFYING,
+                    -> TunnelController.cancelConnect()
+                    // STOPPING is the dead zone: a teardown (or a cancel) is
+                    // already running — taps wait for DISCONNECTED.
+                    TunnelController.State.STOPPING -> {}
+                    else -> TunnelController.connect()
+                }
             })
             Spacer(Modifier.height(2.dp))
 
@@ -125,20 +135,32 @@ fun HomeView(onOpenProfile: () -> Unit = {}) {
             Spacer(Modifier.height(14.dp))
             ModeRow()
 
+            Spacer(Modifier.height(10.dp))
+            TunRow()
+
             Spacer(Modifier.height(14.dp))
-            val busy = state == TunnelController.State.STARTING || state == TunnelController.State.PROVISIONING ||
-                state == TunnelController.State.VERIFYING || state == TunnelController.State.STOPPING
+            val connecting = state == TunnelController.State.STARTING || state == TunnelController.State.PROVISIONING ||
+                state == TunnelController.State.VERIFYING
+            val busy = connecting || state == TunnelController.State.STOPPING
             HoneyButton(
-                title = when (state) {
-                    TunnelController.State.CONNECTED, TunnelController.State.STOPPING -> "قطع اتصال"
+                title = when {
+                    state == TunnelController.State.CONNECTED || state == TunnelController.State.STOPPING -> "قطع اتصال"
+                    connecting -> "لغو اتصال"
                     else -> "اتصال"
                 },
                 filled = true,
                 modifier = Modifier.width(470.dp),
                 busy = busy,
-                enabled = !busy,
+                // A connecting dial answers «لغو» — the busy look stays, the
+                // tap is never swallowed (STOPPING is the only dead zone: the
+                // teardown is already running).
+                enabled = !busy || connecting,
             ) {
-                if (state == TunnelController.State.CONNECTED) TunnelController.disconnect() else TunnelController.connect()
+                when {
+                    state == TunnelController.State.CONNECTED -> TunnelController.disconnect()
+                    connecting -> TunnelController.cancelConnect()
+                    else -> TunnelController.connect()
+                }
             }
 
             when (TunnelController.mode) {
@@ -240,6 +262,32 @@ private fun ModeRow() {
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// The TUN switch — the user's ask, one row. ON = the full tunnel (Wintun
+/// adapter, default route, admin required). OFF = proxy mode: the engine
+/// serves SOCKS 1819 + HTTP 1818 locally and the system proxy (WinINET)
+/// points at 1818, so browsers and proxy-aware apps ride the tunnel with NO
+/// admin rights. A change takes effect on the next connect.
+@Composable
+private fun TunRow() {
+    var on by remember { mutableStateOf(TunnelController.tunEnabled) }
+    GlassCard(Modifier.width(470.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("تونل کامل (TUN)", style = T.body.copy(fontSize = 13.5.sp))
+                Text(
+                    if (on) "روشن — همهٔ ترافیک سیستم از تونل می‌گذرد (نیاز به دسترسی مدیر)"
+                    else "خاموش — حالت پروکسی: پروکسی سیستم روی 127.0.0.1:${faNum(EngineConfig.HTTP_PROXY_PORT)} — بدون نیاز به دسترسی مدیر",
+                    style = T.muted.copy(fontSize = 11.5.sp),
+                )
+            }
+            SwitchHoney(checked = on) { next ->
+                on = next
+                TunnelController.tunEnabled = next
             }
         }
     }

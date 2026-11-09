@@ -84,6 +84,15 @@ import com.beevpn.win.ui.T
 /// runs.
 fun main() {
     maybeRelaunchElevated()
+    // Last-resort hygiene: an app death while it owns the system proxy
+    // (proxy mode, TUN off) must not leave the machine pointing at a dead
+    // port forever — the hook restores whatever the user had. No-op when
+    // the proxy was never applied.
+    java.lang.Runtime.getRuntime().addShutdownHook(
+        Thread {
+            try { com.beevpn.win.engine.WindowsAdmin.clearSystemProxy() } catch (_: Throwable) {}
+        },
+    )
     application {
         Window(
             onCloseRequest = ::exitApplication,
