@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -271,23 +272,46 @@ private fun ModeRow() {
 /// adapter, default route, admin required). OFF = proxy mode: the engine
 /// serves SOCKS 1819 + HTTP 1818 locally and the system proxy (WinINET)
 /// points at 1818, so browsers and proxy-aware apps ride the tunnel with NO
-/// admin rights. A change takes effect on the next connect.
+/// admin rights. A change takes effect on the next connect. Under the switch
+/// sits the local-address line the user asked for — «127.0.0.1:1818 + SOCKS
+/// 1819» — so anyone pointing a browser or app at the tunnel knows exactly
+/// where to dial: in TUN mode 1818 is not listening (includeHttpIn = !tun),
+/// so the line shrinks to the SOCKS port alone.
 @Composable
 private fun TunRow() {
     var on by remember { mutableStateOf(TunnelController.tunEnabled) }
     GlassCard(Modifier.width(470.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("تونل کامل (TUN)", style = T.body.copy(fontSize = 13.5.sp))
-                Text(
-                    if (on) "روشن — همهٔ ترافیک سیستم از تونل می‌گذرد (نیاز به دسترسی مدیر)"
-                    else "خاموش — حالت پروکسی: پروکسی سیستم روی 127.0.0.1:${faNum(EngineConfig.HTTP_PROXY_PORT)} — بدون نیاز به دسترسی مدیر",
-                    style = T.muted.copy(fontSize = 11.5.sp),
-                )
+        Column {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("تونل کامل (TUN)", style = T.body.copy(fontSize = 13.5.sp))
+                    Text(
+                        if (on) "روشن — همهٔ ترافیک سیستم از تونل می‌گذرد (نیاز به دسترسی مدیر)"
+                        else "خاموش — حالت پروکسی: پروکسی سیستم روی 127.0.0.1:${faNum(EngineConfig.HTTP_PROXY_PORT)} — بدون نیاز به دسترسی مدیر",
+                        style = T.muted.copy(fontSize = 11.5.sp),
+                    )
+                }
+                SwitchHoney(checked = on) { next ->
+                    on = next
+                    TunnelController.tunEnabled = next
+                }
             }
-            SwitchHoney(checked = on) { next ->
-                on = next
-                TunnelController.tunEnabled = next
+            Spacer(Modifier.height(8.dp))
+            Text(
+                if (on) "پروکسی محلی در حالت TUN (برای مرورگر و برنامه‌های دیگر):"
+                else "پروکسی محلی — این آدرس را در مرورگر یا برنامه‌های دیگر تنظیم کن:",
+                style = T.muted.copy(fontSize = 11.sp),
+            )
+            Spacer(Modifier.height(3.dp))
+            // Selectable, so the buyer can copy the address straight into
+            // their browser's proxy settings. Latin digits — an address the
+            // user has to type or paste must never wear Persian numerals.
+            SelectionContainer {
+                Text(
+                    if (on) "127.0.0.1:${EngineConfig.SOCKS_PORT} (SOCKS)"
+                    else "127.0.0.1:${EngineConfig.HTTP_PROXY_PORT} (HTTP) + SOCKS ${EngineConfig.SOCKS_PORT}",
+                    style = T.body.copy(fontSize = 11.5.sp),
+                )
             }
         }
     }
