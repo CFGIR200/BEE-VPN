@@ -22,6 +22,24 @@ class EngineProcess(
     private var process: Process? = null
     private val lock = Any()
 
+    /// The engine's dying words — the last output lines it emitted before
+    /// exiting, kept so an abnormal exit can say WHY in the buyer-facing
+    /// message (the 1.7.1 «کد ۱» report gave a code with no cause and the
+    /// advanced log had to be opened by hand). Ring of the most recent lines,
+    /// blank lines dropped, capped so a Persian error stays one line.
+    private val tail = ArrayDeque<String>()
+
+    /// The last non-blank output lines, " | ".joined and trimmed to ~180
+    /// chars — safe to embed in a UI message. Empty when the engine said
+    /// nothing (then the message falls back to the bare exit code).
+    fun dyingWords(): String {
+        synchronized(lock) {
+            val line = tail.filter { it.isNotBlank() }.takeLast(3)
+                .joinToString(" | ") { it.trim().take(80) }
+            return if (line.length > 180) line.take(177) + "…" else line
+        }
+    }
+
     fun start() {
         synchronized(lock) {
             check(process == null) { "$name already running" }
@@ -41,6 +59,10 @@ class EngineProcess(
             Thread({
                 try {
                     p.inputStream.bufferedReader().forEachLine { line ->
+                        synchronized(lock) {
+                            tail.addLast(line)
+                            while (tail.size > 12) tail.removeFirst()
+                        }
                         onLine?.invoke(line)
                     }
                 } catch (_: Exception) {}

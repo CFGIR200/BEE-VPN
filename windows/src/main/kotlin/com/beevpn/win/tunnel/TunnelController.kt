@@ -324,7 +324,7 @@ object TunnelController {
         proc.onLine = { line -> EngineProcess.logLine("[aether] $line") }
         proc.onExit = { code ->
             if (state == State.CONNECTED) {
-                scheduleAutoReconnect("موتور aether ناگهان متوقف شد (کد $code)")
+                scheduleAutoReconnect(engineDeathMessage("aether", code, proc))
             } else if (state == State.STARTING || state == State.VERIFYING) {
                 scope.launch {
                     mutex.withLock { withContext(Dispatchers.IO) { killEnginesQuiet() } }
@@ -363,7 +363,7 @@ object TunnelController {
         xr.onLine = { line -> EngineProcess.logLine("[xray] $line") }
         xr.onExit = { code ->
             if (state == State.CONNECTED) {
-                scheduleAutoReconnect("موتور VPN ناگهان متوقف شد (کد $code)")
+                scheduleAutoReconnect(engineDeathMessage("VPN", code, xr))
             } else if (state == State.STARTING || state == State.VERIFYING) {
                 scope.launch {
                     mutex.withLock { withContext(Dispatchers.IO) { killEnginesQuiet() } }
@@ -552,7 +552,7 @@ object TunnelController {
         proc.onLine = { line -> EngineProcess.logLine("[aether-tor] $line") }
         proc.onExit = { code ->
             if (state == State.CONNECTED) {
-                scheduleAutoReconnect("موتور aether ناگهان متوقف شد (کد $code)")
+                scheduleAutoReconnect(engineDeathMessage("aether", code, proc))
             } else if (state == State.STARTING || state == State.VERIFYING) {
                 scope.launch {
                     mutex.withLock { withContext(Dispatchers.IO) { killEnginesQuiet() } }
@@ -584,7 +584,7 @@ object TunnelController {
         xr.onLine = { line -> EngineProcess.logLine("[xray] $line") }
         xr.onExit = { code ->
             if (state == State.CONNECTED) {
-                scheduleAutoReconnect("موتور VPN ناگهان متوقف شد (کد $code)")
+                scheduleAutoReconnect(engineDeathMessage("VPN", code, xr))
             } else if (state == State.STARTING || state == State.VERIFYING) {
                 scope.launch {
                     mutex.withLock { withContext(Dispatchers.IO) { killEnginesQuiet() } }
@@ -686,7 +686,7 @@ object TunnelController {
         proc.onLine = { line -> EngineProcess.logLine("[xray] $line") }
         proc.onExit = { code ->
             if (state == State.CONNECTED) {
-                scheduleAutoReconnect("موتور VPN ناگهان متوقف شد (کد $code)")
+                scheduleAutoReconnect(engineDeathMessage("VPN", code, proc))
             } else if (state == State.STARTING || state == State.VERIFYING) {
                 scope.launch {
                     mutex.withLock { withContext(Dispatchers.IO) { killEnginesQuiet() } }
@@ -944,6 +944,16 @@ object TunnelController {
                 }
             }
         }
+    }
+
+    /// The buyer-facing death message — the exit code PLUS the engine's own
+    /// dying words (EngineProcess keeps the last output lines). The 1.7.1
+    /// field report was a bare «کد ۱» with no cause, forcing the advanced log
+    /// open by hand; now the screenshot itself carries the reason.
+    private fun engineDeathMessage(engine: String, code: Int, proc: EngineProcess): String {
+        val words = proc.dyingWords()
+        return if (words.isEmpty()) "موتور $engine ناگهان متوقف شد (کد $code)"
+        else "موتور $engine ناگهان متوقف شد (کد $code) — پیام موتور: $words"
     }
 
     /// Android's scheduleAutoReconnect: backoff 5/15/30/60/120 s, suppressed

@@ -40,13 +40,17 @@ jobs:
           if ($h -ne "99185d75d314a07dbba4a130c8ad986cbeb629a07927975636b341ca61f991df") { throw "sing-box zip checksum mismatch: $h" }
           Expand-Archive sb.zip -DestinationPath sbsrc
 
-          # The phone's OWN engine (core/aether, same 2.3.0 the Android jniLibs
-          # build carries) as the standalone Windows binary upstream ships —
-          # plus the pluggable transports it can drive (lyrebird,
-          # psiphon-tunnel-core). Checksum-pinned like every other core.
-          Invoke-WebRequest -Uri "https://github.com/CluvexStudio/aether/releases/download/v2.3.0/aether-windows-x86_64.zip" -OutFile aether.zip
+          # The phone's OWN engine (core/aether) as the standalone Windows
+          # binary upstream ships — plus the pluggable transports it can drive
+          # (lyrebird, psiphon-tunnel-core). Checksum-pinned like every other
+          # core. 2.4.0 is the release that killed the mid-run «کد ۱» exits:
+          # the WARP API calls go by api.devices.cloudflare.com (the name
+          # Cloudflare's own client has called since 2026.6.0) with
+          # api.cloudflareclient.com as the fallback — 2.3.0 had no fallback
+          # when a refresh was refused — plus the rewritten reconnect logic.
+          Invoke-WebRequest -Uri "https://github.com/CluvexStudio/aether/releases/download/v2.4.0/aether-windows-x86_64.zip" -OutFile aether.zip
           $h = (Get-FileHash aether.zip -Algorithm SHA256).Hash.ToLower()
-          if ($h -ne "0cc32dd2d7573f91d2e55d4f427bfe4c6f6252342494e1b410d61b12d1e4dc79") { throw "aether zip checksum mismatch: $h" }
+          if ($h -ne "21b1444628d37121e873878e2eddd7932215418af1a2a12470caee5809026f1a") { throw "aether zip checksum mismatch: $h" }
           Expand-Archive aether.zip -DestinationPath aethersrc
 
           # Cores go under windows/cores-bin/cores/ — a Gradle resources srcDir —

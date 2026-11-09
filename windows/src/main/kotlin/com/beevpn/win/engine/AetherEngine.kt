@@ -16,6 +16,12 @@ import java.io.File
 /// H2, gool's WireGuard-inside-WireGuard — every fast-connect detail the
 /// phone has, byte for byte.
 ///
+/// The standalone is pinned at 2.4.0 (windows.yml): 2.4.0 is the release
+/// that fixed the mid-run «کد ۱» exits — the WARP API calls now go by
+/// api.devices.cloudflare.com (the name Cloudflare's own client has called
+/// since 2026.6.0) with api.cloudflareclient.com as the fallback, plus the
+/// rewritten reconnect logic. The phone's FFI core stays at its own pin.
+///
 /// This object is the desktop twin of `CoreConfig.env()` + the identity-file
 /// handling of `WarpIdentityFetcher.kt` / `IdentityProvisioner.kt`:
 ///   1. identity TOMLs live next to `AETHER_CONFIG`, whose sibling paths the
@@ -71,7 +77,13 @@ object AetherEngine {
     enum class Protocol(val id: String, val register: String) {
         WG("wg", "wg"),
         MASQUE("masque", "masque"),
-        GOOL("gool", "gool"),
+        // The classic WireGuard-in-WireGuard gool — the shape the phone runs.
+        // aether 2.4.0 redefined the bare `gool` register to the MASQUE-shell
+        // shape it now runs by default; the two-WireGuard-hop classic this
+        // app expects (aether.toml + aether-secondary.toml) registers by the
+        // `gool-classic` name there. The RUN shape stays pinned via
+        // AETHER_GOOL_MODE=classic below.
+        GOOL("gool", "gool-classic"),
         MIM("mim", "mim"),
     }
 
@@ -257,7 +269,13 @@ object AetherEngine {
         env["AETHER_CONFIG"] = configPath().absolutePath
         env["AETHER_LOG_LEVEL"] = "info"
         env["AETHER_REGISTER"] = protocol.register
-        if (apiEch != null) env["AETHER_API_ECH"] = apiEch
+        if (apiEch != null) {
+            // AETHER_API_ECH is the phone FFI's name; the standalone binary
+            // (the one Windows runs) reads AETHER_ECH — send BOTH so the
+            // registration API rides ECH on either build.
+            env["AETHER_API_ECH"] = apiEch
+            env["AETHER_ECH"] = apiEch
+        }
         if (upstream != null) env["AETHER_UPSTREAM"] = upstream
         return env
     }
