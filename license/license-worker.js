@@ -101,6 +101,25 @@ async function issueToken(env, payload) {
   return `v1.${b64urlEncode(payloadBytes)}.${b64urlEncode(sig)}`;
 }
 
+/** Ed25519 verification over a `v1.<payload>.<sig>` token — the same bytes
+ * the app's compiled-in public key checks. Raw public import IS allowed for
+ * Ed25519 in both Workers and Node (only raw PRIVATE import is rejected). */
+async function tokenSignatureValid(env, payloadB64url, sigB64url) {
+  try {
+    const pub = String(env.LICENSE_ED25519_PUB_B64 || '');
+    if (!pub) return false;
+    const key = await crypto.subtle.importKey('raw', b64urlDecode(pub), { name: 'Ed25519' }, false, ['verify']);
+    return await crypto.subtle.verify(
+      { name: 'Ed25519' },
+      key,
+      b64urlDecode(sigB64url),
+      b64urlDecode(payloadB64url),
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
 async function pbkdf2Hash(password, saltB64) {
   const salt = b64urlDecode(saltB64);
   const material = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
@@ -169,12 +188,17 @@ async function bindAndIssue(env, row, table, keyColumn, keyValue, installId) {
 
   let expiry = row.expires_at;
   if (!expiry) {
-    // First activation starts the clock.
+    // First activation starts the clock. The `bound_install_id IS NULL OR =
+    // installId` guard makes the bind ATOMIC: the 1.7.x check-then-act race
+    // (SELECT here, UPDATE there) let two concurrent activations with two
+    // different devices both win — one entitlement on two devices. A loser
+    // of the atomic UPDATE now gets the honest 409.
     expiry = now + row.duration_days * 86400;
-    await env.DB
-      .prepare(`UPDATE ${table} SET bound_install_id = ?, activated_at = ?, expires_at = ? WHERE ${keyColumn} = ?`)
-      .bind(installId, now, expiry, keyValue)
+    const upd = await env.DB
+      .prepare(`UPDATE ${table} SET bound_install_id = ?, activated_at = ?, expires_at = ? WHERE ${keyColumn} = ? AND (bound_install_id IS NULL OR bound_install_id = ?)`)
+      .bind(installId, now, expiry, keyValue, installId)
       .run();
+    if (!upd.meta || upd.meta.changes === 0) return bad(409, 'bound to another device');
   }
 
   const subject = table === 'licenses' ? row.code : row.username;
@@ -268,6 +292,15 @@ if (url.pathname === '/verify') {
   if (await throttled(env, request)) return bad(429, 'too many attempts, try later');
   const parts = token.split('.');
   if (parts.length !== 3) return bad(400, 'invalid token');
+  // The Ed25519 signature is checked HERE, before the payload is trusted.
+  // The 1.7.x handler parsed the payload with NO verify call — any client
+  // could post `v1.<forged>.<junk>` and reach the DB oracle. A failed
+  // signature also counts against the attempts budget, so the forged-
+  // payload oracle is rate-limited like every other abuse surface.
+  if (!(await tokenSignatureValid(env, parts[1], parts[2]))) {
+    await recordAttempt(env, request, false);
+    return bad(400, 'invalid token');
+  }
   let payload;
   try {
     payload = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[1])));

@@ -87,18 +87,34 @@ object TunnelVerifier {
 
     private fun routePrint4(): String = runCapture("route", "print", "-4") ?: ""
 
+    /// Hard deadline for every external command: route.exe / reg.exe wedging
+    /// (AV injection, a sick network stack) once held the connect mutex
+    /// forever and froze the UI on «Connecting» with no escape — these run ON
+    /// the mutex-holding connect thread.
+    private const val CMD_TIMEOUT_S = 10L
+
     private fun run(vararg cmd: String): Boolean = try {
         val p = ProcessBuilder(*cmd).start()
-        p.waitFor() == 0
+        if (!p.waitFor(CMD_TIMEOUT_S, java.util.concurrent.TimeUnit.SECONDS)) {
+            p.destroyForcibly()
+            p.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
+            false
+        } else p.exitValue() == 0
     } catch (_: Exception) {
         false
     }
 
     private fun runCapture(vararg cmd: String): String? = try {
         val p = ProcessBuilder(*cmd).start()
-        val out = p.inputStream.bufferedReader().readText()
-        p.waitFor()
-        out
+        // Wait FIRST, read after: a wedged process that never exits must hit
+        // the deadline instead of pinning readText() forever. `route print -4`
+        // is a few KB — well under the 64 KB pipe buffer, so the process
+        // cannot block on a full pipe while we wait.
+        if (!p.waitFor(CMD_TIMEOUT_S, java.util.concurrent.TimeUnit.SECONDS)) {
+            p.destroyForcibly()
+            p.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
+            null
+        } else p.inputStream.bufferedReader().readText()
     } catch (_: Exception) {
         null
     }

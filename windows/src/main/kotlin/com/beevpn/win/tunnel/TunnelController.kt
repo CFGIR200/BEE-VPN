@@ -27,6 +27,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -186,14 +187,29 @@ object TunnelController {
                 userDisconnect = true
                 watchdogJob?.cancel()
                 reconnectJob?.cancel()
-                setState(State.STOPPING, "لغو اتصال…")
-                scope.launch(Dispatchers.IO) { killEnginesQuiet() }
+                // The cancel completes the teardown ITSELF and lands the
+                // honest DISCONNECTED face immediately. The 1.7.x shape
+                // (STOPPING + «the in-flight connect will land on
+                // DISCONNECTED itself») had a proven dead end: a tap during
+                // the auto-reconnect countdown cancelled the ONLY coroutine
+                // carrying that duty, and STOPPING is a UI dead zone — the
+                // app froze on «لغو اتصال…» until restart. stopEngines is
+                // safe from any thread (no mutex inside); any in-flight
+                // ladder observes userDisconnect at its next checkpoint and
+                // stops quietly.
+                stopEngines("لغو شد")
             }
             else -> {}
         }
     }
 
     private fun setState(s: State, text: String) {
+        // After a cancel has landed (DISCONNECTED), a dying in-flight ladder
+        // may still paint PROVISIONING/STARTING/VERIFYING from its next step
+        // before reaching its abort checkpoint — ghost flickers on a torn-
+        // down tunnel. Absorb them: only a fresh connect (which clears
+        // userDisconnect first) may repaint the in-flight faces.
+        if (s != State.DISCONNECTED && s != State.FAILED && userDisconnect && state == State.DISCONNECTED) return
         state = s
         statusText = text
     }
@@ -214,6 +230,17 @@ object TunnelController {
         // teardown is safe and keeps FAILED from being clobbered by a delayed
         // DISCONNECTED write (the async variant could land after the state set).
         stopEngines(null)
+        setState(State.FAILED, "اتصال ناموفق")
+    }
+
+    /// Last-resort terminal write for Main.kt's uncaught-exception handler —
+    /// a thread that died mid-connect must never leave the UI wedged on
+    /// «Connecting». Safe from any thread: the dying thread holds nothing,
+    /// and EngineProcess.stop is bounded.
+    fun forceFail(message: String) {
+        if (state == State.CONNECTED || state == State.DISCONNECTED) return
+        lastError = message
+        killEnginesQuiet()
         setState(State.FAILED, "اتصال ناموفق")
     }
 
@@ -243,25 +270,34 @@ object TunnelController {
         }
 
         setState(State.PROVISIONING, "آماده‌سازی…")
-        if (AppPaths.isWindows()) TunnelVerifier.sweepStaleRoute()
-
-        val cores = CoreExtractor.ensure()
-        if (cores == null) {
-            fail("موتورهای VPN (xray.exe / sing-box.exe / aether.exe) پیدا نشدند — بستهٔ رسمی (MSI یا ZIP قابل حمل) را نصب کن یا پوشهٔ cores را کنار exe بگذار")
-            return
-        }
-        // Elevated (packaged) runs ask Defender once to leave the cores dir
-        // alone — the anti-quarantine treaty that keeps the engines intact.
-        if (com.beevpn.win.engine.WindowsAdmin.isAdmin()) CoreExtractor.defenderExclusionOnce()
-
-        // TUN off = proxy mode = no Wintun adapter, no routes — no admin needed.
-        val needsTun = AppPaths.isWindows() && tunEnabled
-        if (needsTun && !WindowsAdmin.isAdmin()) {
-            fail("ساخت تونل VPN دسترسی مدیر می‌خواهد — برنامه را با «Run as administrator» باز کن، یا TUN را خاموش کن (حالت پروکسی)")
-            return
-        }
-
+        // EVERYTHING from here rides inside one guard: the pre-try section of
+        // the 1.7.x code (sweepStaleRoute / CoreExtractor.ensure /
+        // defenderExclusionOnce / isAdmin) ran OUTSIDE any catch, so an
+        // exception there escaped the connect coroutine with no terminal
+        // state write — the UI sat on «آماده‌سازی…» until restart. The catch
+        // below takes Throwable (an Error used to slip past), answers
+        // CancellationException with the honest cancel face, and everything
+        // else lands on FAILED. No path out of connectBlocking may leave the
+        // state in PROVISIONING/STARTING/VERIFYING.
         try {
+            if (AppPaths.isWindows()) TunnelVerifier.sweepStaleRoute()
+
+            val cores = CoreExtractor.ensure()
+            if (cores == null) {
+                fail("موتورهای VPN (xray.exe / sing-box.exe / aether.exe) پیدا نشدند — بستهٔ رسمی (MSI یا ZIP قابل حمل) را نصب کن یا پوشهٔ cores را کنار exe بگذار")
+                return
+            }
+            // Elevated (packaged) runs ask Defender once to leave the cores dir
+            // alone — the anti-quarantine treaty that keeps the engines intact.
+            if (com.beevpn.win.engine.WindowsAdmin.isAdmin()) CoreExtractor.defenderExclusionOnce()
+
+            // TUN off = proxy mode = no Wintun adapter, no routes — no admin needed.
+            val needsTun = AppPaths.isWindows() && tunEnabled
+            if (needsTun && !WindowsAdmin.isAdmin()) {
+                fail("ساخت تونل VPN دسترسی مدیر می‌خواهد — برنامه را با «Run as administrator» باز کن، یا TUN را خاموش کن (حالت پروکسی)")
+                return
+            }
+
             // Pre-connect baseline of the bare ISP egress + the IPv6 probe
             // ride IN PARALLEL with the exit resolution — the node race is
             // the long pole of every connect, and these two probes cost
@@ -291,6 +327,8 @@ object TunnelController {
                 when (e) {
                     is Exit.Node -> attempts.add(Attempt.NodeTunnel(e.profile, anytls = false))
                     is Exit.Anytls -> attempts.add(Attempt.NodeTunnel(e.profile, anytls = true))
+                    is Exit.Tor -> attempts.add(Attempt.Tor)
+                    is Exit.Manual -> attempts.add(Attempt.Manual(e.identity))
                     else -> {}
                 }
             }
@@ -331,6 +369,21 @@ object TunnelController {
                         )
                         bringUpAether(attempt.protocol, cores, baseline, ipv6)
                     }
+                    Attempt.Tor -> {
+                        // The Tor rung was wired end-to-end (bringUpTor: the
+                        // tor circuit carries registration AND the wg tunnel)
+                        // but no Attempt ever reached it — a 🧅 tap died in
+                        // «اتصال برقرار نشد» without the engine even starting.
+                        TunnelVerifier.log("ladder: Tor rung — aether tor-reverse (WARP over the Tor circuit)")
+                        bringUpTor(cores, baseline, ipv6)
+                    }
+                    is Attempt.Manual -> {
+                        // The same story for MANUAL: resolveExit returned
+                        // Exit.Manual, enqueueNode dropped it, the user's
+                        // wg-quick text never reached bringUpManualWarp.
+                        TunnelVerifier.log("ladder: manual wg-quick rung")
+                        bringUpManualWarp(attempt.identity, cores, baseline, ipv6)
+                    }
                 }
                 if (verdict.message == null) { earned = true; break }
             }
@@ -363,8 +416,21 @@ object TunnelController {
                 "متصل است — $exitSummary" + if (viaProxy) " — پروکسی سیستم" else "",
             )
             startWatchdog()
-        } catch (e: Exception) {
-            fail("خطای غیرمنتظره: ${e.message ?: e.javaClass.simpleName}")
+        } catch (e: CancellationException) {
+            // A cancelled ladder (reconnectJob.cancel() while connectBlocking
+            // runs) must land the honest cancel face, never the red FAILED one
+            // — CancellationException IS an Exception, and the old single
+            // catch turned every cancel into «خطای غیرمنتظره: Job was
+            // cancelled».
+            stopEngines("لغو شد")
+            throw e
+        } catch (t: Throwable) {
+            // Throwable, not Exception: a NoClassDefFoundError /
+            // ExceptionInInitializerError escaping here killed the coroutine
+            // with no state write — the UI sat on «Connecting» until the app
+            // was restarted. The class of failure the 1.5.0 MSI already
+            // shipped once.
+            fail("خطای غیرمنتظره: ${t.message ?: t.javaClass.simpleName}")
         }
     }
 
@@ -474,6 +540,7 @@ object TunnelController {
     /// as the connect's Verdict so a provisioning failure can NEVER fall
     /// through to a fake «متصل است».
     private suspend fun ensureAetherIdentity(protocol: AetherEngine.Protocol, cores: File): String? {
+        if (abortIfCancelled()) return "لغو شد"
         if (AetherEngine.identitiesReady(protocol)) return null
 
         if (protocol == AetherEngine.Protocol.WG) {
@@ -485,6 +552,11 @@ object TunnelController {
             }
         }
 
+        // Cancel checkpoints between every rung: the whole ladder can spend
+        // minutes on a filtered carrier, and the 1.7.x shape answered a tap
+        // on «لغو» only at the NEXT rung — the user watched the spinner
+        // ignore them through the relay, direct, SHARD and ECH budgets.
+        if (abortIfCancelled()) return "لغو شد"
         setState(State.PROVISIONING, "دریافت هویت از سرورهای پروژه…")
         // The ladder is walked ALWAYS — the phone never gates its direct rung
         // behind the blocked-API cache (that cache only steers the SHARD
@@ -503,9 +575,11 @@ object TunnelController {
             }
             .onFailure { TunnelVerifier.log("relay/direct ladder threw: ${it.message}") }
 
+        if (abortIfCancelled()) return "لغو شد"
         setState(State.PROVISIONING, "ثبت‌نام از طریق تونل SHARD…")
         if (registerThroughShard(protocol, cores)) return null
 
+        if (abortIfCancelled()) return "لغو شد"
         setState(State.PROVISIONING, "ثبت‌نام از مسیر رمزگذاری‌شده (ECH)…")
         if (AetherEngine.registerIfNeeded(protocol, cores, onLine = { line ->
             EngineProcess.logLine("[aether-register] $line")
@@ -542,6 +616,7 @@ object TunnelController {
                 cancelled = { userDisconnect },
             )
         }
+        if (abortIfCancelled()) return false
         val node = winner ?: run {
             TunnelVerifier.log("SHARD-backed registration skipped — no node answered")
             return false
@@ -563,6 +638,7 @@ object TunnelController {
             }
             val upstream = "socks5://127.0.0.1:${EngineConfig.PROVISION_SOCKS_PORT}"
 
+            if (abortIfCancelled()) return false
             // 2a — the engine's own registration riding the tunnel: the exact
             // mechanism the phone uses (AETHER_UPSTREAM → the SOCKS listener).
             val viaEngine = AetherEngine.registerIfNeeded(
@@ -816,6 +892,8 @@ object TunnelController {
     private sealed class Attempt {
         data class NodeTunnel(val profile: ShardProfile, val anytls: Boolean) : Attempt()
         data class Engine(val protocol: AetherEngine.Protocol) : Attempt()
+        data object Tor : Attempt()
+        data class Manual(val identity: WarpIdentity) : Attempt()
     }
 
     /// How many live race candidates one connect may walk before the honest

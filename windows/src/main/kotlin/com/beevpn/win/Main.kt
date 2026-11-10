@@ -93,6 +93,24 @@ fun main() {
             try { com.beevpn.win.engine.WindowsAdmin.clearSystemProxy() } catch (_: Throwable) {}
         },
     )
+    // A thread that dies mid-connect must never leave the UI wedged on
+    // «Connecting» — the audit's PROVEN path: an Error escaping
+    // connectBlocking (or any engine onExit callback) had no handler
+    // anywhere, so the state froze on whatever the last paint was. The
+    // handler logs the crash and forces a terminal state when the crash
+    // landed while the tunnel was being built.
+    Thread.setDefaultUncaughtExceptionHandler { t, e ->
+        try {
+            com.beevpn.win.engine.EngineProcess.logLine(
+                "[crash] ${t.name}: ${e.javaClass.simpleName}: ${e.message ?: "(no message)"}",
+            )
+        } catch (_: Throwable) {}
+        try {
+            com.beevpn.win.tunnel.TunnelController.forceFail(
+                "خطای داخلی: ${e.message ?: e.javaClass.simpleName}",
+            )
+        } catch (_: Throwable) {}
+    }
     application {
         Window(
             onCloseRequest = ::exitApplication,

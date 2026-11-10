@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "com.beevpn"
-version = "1.7.5"
+version = "1.7.6"
 
 repositories {
     // JetBrains' read-through mirror of Maven Central — resilient when the

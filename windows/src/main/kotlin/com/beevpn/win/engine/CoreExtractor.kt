@@ -144,8 +144,15 @@ object CoreExtractor {
                 "powershell", "-NoProfile", "-NonInteractive", "-Command",
                 "try { Add-MpPreference -ExclusionPath '${AppPaths.baseDir.resolve("cores").absolutePath}' -ErrorAction Stop; 'ok' } catch { 'no' }",
             ).redirectErrorStream(true).start()
+            // Wait FIRST, read after — the 1.7.x shape called the unbounded
+            // readText() BEFORE waitFor, so a wedged powershell pinned the
+            // connect thread (the mutex holder) with no deadline.
+            if (!proc.waitFor(15, java.util.concurrent.TimeUnit.SECONDS)) {
+                proc.destroyForcibly()
+                EngineProcess.logLine("[cores] Defender exclusion attempt timed out — will retry on the next connect")
+                return
+            }
             val answer = proc.inputStream.bufferedReader().readText().trim()
-            proc.waitFor(15, java.util.concurrent.TimeUnit.SECONDS)
             val ok = answer.endsWith("ok")
             marker.writeText(if (ok) "exclusion granted" else "exclusion refused ($answer)")
             EngineProcess.logLine("[cores] Defender exclusion for the cores dir: ${if (ok) "granted" else "refused — real-time protection may quarantine the engines again"}")

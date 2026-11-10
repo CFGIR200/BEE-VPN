@@ -21,7 +21,12 @@ object WindowsAdmin {
         if (!com.beevpn.win.AppPaths.isWindows()) return false
         return try {
             val p = ProcessBuilder("net", "session").start()
-            p.waitFor() == 0
+            // Bounded: `net session` runs ON the connect thread — a wedged
+            // net.exe (sick RPC/LSA) used to be able to pin it forever.
+            if (!p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                p.destroyForcibly(); p.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
+                false
+            } else p.exitValue() == 0
         } catch (_: Exception) {
             false
         }
@@ -103,27 +108,39 @@ object WindowsAdmin {
 
     private fun regQuery(name: String): String? = try {
         val p = ProcessBuilder("reg", "query", PROXY_REG, "/v", name).start()
-        val out = p.inputStream.bufferedReader().readText()
-        p.waitFor()
-        // "    ProxyEnable    REG_DWORD    0x1" — the last token is the value,
-        // hex for DWORDs; normalise to decimal so the restore compares equal.
-        out.trim().lineLastOrNull()?.takeIf { it.contains(name) }?.substringAfterLast(' ')
-            ?.takeIf { it.isNotEmpty() }
-            ?.let { if (it.startsWith("0x")) it.removePrefix("0x").toLongOrNull(16)?.toString() ?: it else it }
+        // Wait FIRST, read after — a wedged reg.exe must hit the deadline,
+        // not pin readText() forever. reg query output is tiny (one line).
+        if (!p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
+            p.destroyForcibly(); p.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
+            null
+        } else {
+            val out = p.inputStream.bufferedReader().readText()
+            // "    ProxyEnable    REG_DWORD    0x1" — the last token is the value,
+            // hex for DWORDs; normalise to decimal so the restore compares equal.
+            out.trim().lineLastOrNull()?.takeIf { it.contains(name) }?.substringAfterLast(' ')
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { if (it.startsWith("0x")) it.removePrefix("0x").toLongOrNull(16)?.toString() ?: it else it }
+        }
     } catch (_: Exception) {
         null
     }
 
     private fun regAdd(name: String, value: String, type: String = "REG_SZ"): Boolean = try {
         val p = ProcessBuilder("reg", "add", PROXY_REG, "/v", name, "/t", type, "/d", value, "/f").start()
-        p.waitFor() == 0
+        if (!p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
+            p.destroyForcibly(); p.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
+            false
+        } else p.exitValue() == 0
     } catch (_: Exception) {
         false
     }
 
     private fun regDelete(name: String): Boolean = try {
         val p = ProcessBuilder("reg", "delete", PROXY_REG, "/v", name, "/f").start()
-        p.waitFor() == 0
+        if (!p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
+            p.destroyForcibly(); p.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
+            false
+        } else p.exitValue() == 0
     } catch (_: Exception) {
         false
     }

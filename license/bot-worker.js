@@ -1929,7 +1929,19 @@ async function handleAdminCb(env, cb, data) {
 export default {
   async fetch(request, env) {
     const secret = String(env.WEBHOOK_SECRET || '');
-    if (!secret || request.headers.get('x-telegram-bot-api-secret-token') !== secret) {
+    // Constant-time compare — the license worker's constantTimeEqual shape.
+    // Same-length random secrets make the timing signal negligible, but the
+    // comparison cost should not depend on where the first byte differs.
+    let diff = secret.length ^ String(request.headers.get('x-telegram-bot-api-secret-token') || '').length;
+    if (secret) {
+      const given = String(request.headers.get('x-telegram-bot-api-secret-token') || '');
+      if (given.length === secret.length) {
+        for (let i = 0; i < secret.length; i++) diff |= secret.charCodeAt(i) ^ given.charCodeAt(i);
+      } else {
+        diff = 1;
+      }
+    }
+    if (!secret || diff !== 0) {
       return new Response('forbidden', { status: 403 });
     }
     if (!env.DB || !env.BOT_TOKEN) return new Response('not configured', { status: 500 });
