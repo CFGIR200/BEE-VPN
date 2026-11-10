@@ -166,29 +166,21 @@ jobs:
           set -e
           TAG="$REF"
           VER="${TAG#v}"
-          cat > notes.md <<EOF
-          ## BEE-VPN $VER
+          # The release body IS the annotated tag message — every release tag
+          # is created with `git tag -a` carrying its own Persian notes, so
+          # the notes here can never go stale again. A constant downloads
+          # footer is appended.
+          git tag -l "$TAG" --format='%(contents)' > notes.md
+          cat >> notes.md <<EOF
 
-          Changes in this version:
-          - New: subscription paywall — the app opens on a "The hive is locked 🐝" gate;
-            activate with a code (BEE-XXXX-XXXX-XXXX) or sign in with your account
-          - 1-day free trial codes, issued by the @BEEHIVE_GUARD_BOT Telegram sales bot
-          - Entitlements are Ed25519-signed and bound to one device; they verify offline
-            and revocation propagates via a background check every ~12 h
-          - Fix (3.3.1): the Buy / Trial / Support / Channel links now open the
-            official Telegram app directly instead of a browser — fixes the
-            dead t.me redirect on phones without Google Play services
-          - Fix (from 3.2.1): dead identity-relay ladder skipped — direct registration
-            starts immediately, no more endless "Connecting"
-          - 7 connection modes unchanged: WireGuard, MASQUE, WARP-on-WARP (gool),
-            Psiphon, Tor, Foxy, SHARD
-          - Bee theme and icons, Persian + English UI
+          ---
 
           **Downloads:** install the APK matching your device — most phones need \`arm64-v8a\`.
           \`SHA256SUMS.txt\` contains checksums to verify your download.
           EOF
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $TAG already exists - uploading assets with --clobber"
+            echo "Release $TAG already exists - applying notes, uploading assets with --clobber"
+            gh release edit "$TAG" --notes-file notes.md --repo "$GITHUB_REPOSITORY"
             gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
           else
             gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
