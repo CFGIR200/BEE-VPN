@@ -83,7 +83,15 @@ object TunnelController {
 
     // Prefs (persisted through SecureStore like the rest of the identity data)
     var mode: Mode
-        get() = runCatching { Mode.valueOf(SecureStore.get("engine.mode") ?: "AUTO") }.getOrDefault(Mode.AUTO)
+        // SHARD/WARP are no longer offered in the selector (operator's call):
+        // a stored SHARD/WARP choice migrates to AUTO — the same engines still
+        // serve unseen inside AUTO's ladder, just without their names on screen.
+        get() = runCatching {
+            when (val m = Mode.valueOf(SecureStore.get("engine.mode") ?: "AUTO")) {
+                Mode.SHARD, Mode.WARP -> Mode.AUTO
+                else -> m
+            }
+        }.getOrDefault(Mode.AUTO)
         set(v) { SecureStore.put("engine.mode", v.name) }
 
     var fragmentOnDirect: Boolean
@@ -413,7 +421,9 @@ object TunnelController {
             val viaProxy = !tunEnabled && WindowsAdmin.setSystemProxy(EngineConfig.HTTP_PROXY_PORT)
             setState(
                 State.CONNECTED,
-                "متصل است — $exitSummary" + if (viaProxy) " — پروکسی سیستم" else "",
+                // Operator's call: the banner never names the engine or the
+                // node — exitSummary stays internal, diagnostics only.
+                "متصل است" + if (viaProxy) " — پروکسی سیستم" else "",
             )
             startWatchdog()
         } catch (e: CancellationException) {
@@ -444,7 +454,7 @@ object TunnelController {
         baseline: String?,
         ipv6: Boolean,
     ): Verdict {
-        setState(State.PROVISIONING, "هویت WARP…")
+        setState(State.PROVISIONING, "دریافت هویت…")
         val identityFailure = ensureAetherIdentity(protocol, cores)
         if (identityFailure != null) return Verdict(identityFailure)
 
@@ -510,9 +520,9 @@ object TunnelController {
 
         setState(State.VERIFYING, "بررسی تونل سیستم…")
         exitSummary = when (protocol) {
-            AetherEngine.Protocol.WG -> "WARP — موتور اندروید"
+            AetherEngine.Protocol.WG -> "ابری — موتور اندروید"
             AetherEngine.Protocol.MASQUE -> "MASQUE — موتور اندروید"
-            AetherEngine.Protocol.GOOL -> "WARP روی WARP (گول) — موتور اندروید"
+            AetherEngine.Protocol.GOOL -> "گول — موتور اندروید"
             AetherEngine.Protocol.MIM -> "MASQUE روی MASQUE — موتور اندروید"
         }
         return withContext(Dispatchers.IO) { verifyTunnelUp(baseline, warpExit = true) }
@@ -544,7 +554,7 @@ object TunnelController {
         if (AetherEngine.identitiesReady(protocol)) return null
 
         if (protocol == AetherEngine.Protocol.WG) {
-            setState(State.PROVISIONING, "ثبت‌نام WARP…")
+            setState(State.PROVISIONING, "ثبت‌نام…")
             val saved = WarpProvisioner.saved()
             if (saved != null && saved.clientIdB64.isNotBlank()) {
                 AetherEngine.writeWgIdentity(saved)
@@ -576,7 +586,7 @@ object TunnelController {
             .onFailure { TunnelVerifier.log("relay/direct ladder threw: ${it.message}") }
 
         if (abortIfCancelled()) return "لغو شد"
-        setState(State.PROVISIONING, "ثبت‌نام از طریق تونل SHARD…")
+        setState(State.PROVISIONING, "ثبت‌نام از طریق تونل…")
         if (registerThroughShard(protocol, cores)) return null
 
         if (abortIfCancelled()) return "لغو شد"
@@ -586,11 +596,11 @@ object TunnelController {
         })) return null
 
         return "هویت " + when (protocol) {
-            AetherEngine.Protocol.WG -> "WARP"
-            AetherEngine.Protocol.MASQUE -> "MASQUE"
-            AetherEngine.Protocol.GOOL -> "گول (WARP روی WARP)"
+            AetherEngine.Protocol.WG -> "ابری"
+            AetherEngine.Protocol.MASQUE -> "ماسک"
+            AetherEngine.Protocol.GOOL -> "گول"
             AetherEngine.Protocol.MIM -> "ماسک روی ماسک"
-        } + " ساخته نشد — اتصال اینترنت را بررسی کن، یک بار به حالت SHARD وصل شو و دوباره تلاش کن؛ در تب پیشرفته هم می‌توانی کانفیگ دستی بگذاری"
+        } + " ساخته نشد — اتصال اینترنت را بررسی کن و دوباره تلاش کن؛ در تب پیشرفته هم می‌توانی کانفیگ دستی بگذاری"
     }
 
     /// The SHARD-backed registration — the desktop provisionIdentityThroughShard.
@@ -607,7 +617,7 @@ object TunnelController {
             TunnelVerifier.log("SHARD-backed registration skipped — the node pool is empty")
             return false
         }
-        setState(State.PROVISIONING, "ثبت‌نام — مسابقه نودها…")
+        setState(State.PROVISIONING, "ثبت‌نام…")
         var winner: ShardProfile? = null
         withContext(Dispatchers.IO) {
             winner = ShardRace.sweep(
@@ -622,7 +632,7 @@ object TunnelController {
             return false
         }
 
-        setState(State.PROVISIONING, "ثبت‌نام از مسیر تونل SHARD…")
+        setState(State.PROVISIONING, "ثبت‌نام از مسیر تونل…")
         val cfgFile = File(AppPaths.runDir, "provision.json")
         cfgFile.writeText(EngineConfig.provisioningConfig(node).toString(2))
         val xr = EngineProcess(
@@ -655,7 +665,7 @@ object TunnelController {
             // 2b — in-process enrollment over the same SOCKS listener: speaks
             // the registration API itself (IdentityRelayClient), so an engine
             // register that cannot still leaves a complete identity on disk.
-            setState(State.PROVISIONING, "ثبت‌نام مستقیم از مسیر SHARD…")
+            setState(State.PROVISIONING, "ثبت‌نام مستقیم…")
             val outcome = runCatching {
                 IdentityRelayClient.provisionThroughSocks(
                     protocol,
@@ -685,7 +695,7 @@ object TunnelController {
         baseline: String?,
         ipv6: Boolean,
     ): Verdict {
-        setState(State.PROVISIONING, "هویت WARP…")
+        setState(State.PROVISIONING, "دریافت هویت…")
         val identityFailure = ensureAetherIdentity(AetherEngine.Protocol.WG, cores)
         if (identityFailure != null) return Verdict(identityFailure)
 
@@ -743,7 +753,7 @@ object TunnelController {
         xray = xr
 
         setState(State.VERIFYING, "بررسی تونل سیستم…")
-        exitSummary = "تور (WARP روی تور) — موتور اندروید"
+        exitSummary = "تور — موتور اندروید"
         return withContext(Dispatchers.IO) { verifyTunnelUp(baseline, warpExit = true) }
     }
 
@@ -768,7 +778,7 @@ object TunnelController {
         )
         val xrayConfigFile = File(AppPaths.runDir, "xray.json")
         xrayConfigFile.writeText(xrayConfig.toString(2))
-        return startXrayTunnel(xrayConfigFile, cores, null, baseline, "SHARD — ${profile.displayLabel()}", warpExit = false)
+        return startXrayTunnel(xrayConfigFile, cores, null, baseline, "مسیر زنده — موتور اندروید", warpExit = false)
     }
 
     private suspend fun bringUpAnytls(
@@ -931,7 +941,7 @@ object TunnelController {
             }
             Mode.SHARD -> {
                 if (poolEmpty) {
-                    fail("استخر SHARD خالی است — اتصال اینترنت را بررسی کن یا «به‌روزرسانی نودها» را بزن")
+                    fail("استخر خالی است — اتصال اینترنت را بررسی کن و دوباره تلاش کن")
                     return null to emptyList()
                 }
                 val ranked = runShardRaceRanked()
@@ -960,13 +970,13 @@ object TunnelController {
         val pool = refreshPool()
         val pinned = pinnedNodeKey?.let { key -> pool.firstOrNull { it.key() == key } }
         if (pinned != null) {
-            setState(State.PROVISIONING, "بررسی نود منتخب…")
+            setState(State.PROVISIONING, "بررسی مسیر منتخب…")
             val pinnedHit = withContext(Dispatchers.IO) {
                 ShardRace.raceSlice(listOf(pinned), cores, cancelled = { userDisconnect })
             }
             if (pinnedHit.isNotEmpty()) return listOf(pinned)
             if (mode == Mode.SHARD) {
-                fail("نود انتخابی پاسخ نمی‌دهد — نود دیگری را در تب نودها انتخاب کن")
+                fail("مسیر انتخابی پاسخ نمی‌دهد — دوباره تلاش کن")
                 return emptyList()
             }
         }
@@ -978,7 +988,7 @@ object TunnelController {
             val lastKey = SecureStore.get("shard.lastWinner")?.takeIf { it.isNotEmpty() }
             val last = lastKey?.let { key -> pool.firstOrNull { it.key() == key } }
             if (last != null) {
-                setState(State.PROVISIONING, "بررسی آخرین نود سالم…")
+                setState(State.PROVISIONING, "بررسی آخرین مسیر سالم…")
                 val hit = withContext(Dispatchers.IO) {
                     ShardRace.raceSlice(listOf(last), cores, cancelled = { userDisconnect })
                 }
@@ -994,7 +1004,7 @@ object TunnelController {
     }
 
     private suspend fun runCooledRace(pool: List<ShardProfile>, cores: File): List<ShardProfile> {
-        setState(State.PROVISIONING, "مسابقهٔ نودها (مثل اندروید)…")
+        setState(State.PROVISIONING, "مسابقهٔ مسیرها (مثل اندروید)…")
         var ranked: List<ShardProfile> = emptyList()
         withContext(Dispatchers.IO) {
             ranked = ShardRace.sweepRanked(
@@ -1005,7 +1015,7 @@ object TunnelController {
             )
         }
         if (ranked.isEmpty() && mode == Mode.SHARD) {
-            fail("هیچ نودی از استخر SHARD پاسخ نداد — اتصال اینترنت را بررسی کن یا «به‌روزرسانی نودها» را بزن")
+            fail("هیچ مسیری پاسخ نداد — اتصال اینترنت را بررسی کن و دوباره تلاش کن")
         }
         return ranked
     }
@@ -1080,11 +1090,11 @@ object TunnelController {
             TunnelVerifier.log("engine egress: DEAD (no trace answer through SOCKS)")
             return if (warpExit) {
                 Verdict(
-                    "تونل بالا آمد اما خروجی WARP ترافیک پاس نمی‌دهد — شبکه‌ات UDP را فیلتر می‌کند. " +
-                        "به حالت SHARD برو (نودها را «به‌روزرسانی نودها» کن) یا در تب پیشرفته کانفیگ دستی بگذار",
+                    "تونل بالا آمد اما خروجی ابری ترافیک پاس نمی‌دهد — شبکه‌ات UDP را فیلتر می‌کند. " +
+                        "حالت دیگری را امتحان کن یا در تب پیشرفته کانفیگ دستی بگذار",
                 )
             } else {
-                Verdict("تونل بالا آمد اما خروجی (نود) ترافیک پاس نمی‌دهد — نود دیگری را امتحان کن یا «به‌روزرسانی نودها» را بزن")
+                Verdict("تونل بالا آمد اما خروجی ترافیک پاس نمی‌دهد — دوباره تلاش کن یا در تب پیشرفته کانفیگ دستی بگذار")
             }
         }
         TunnelVerifier.log("engine egress: $exitIp")

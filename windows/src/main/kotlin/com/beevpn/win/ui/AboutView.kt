@@ -50,7 +50,7 @@ fun AboutView() {
                 Column {
                     SectionHeader("درون این جعبه")
                     InfoRow("موتور پروتکل‌ها", "Xray-core (VLESS · VMESS · TROJAN · SS · HYSTERIA2 · REALITY · ECH · FinalMask)")
-                    InfoRow("تونل WARP", "WireGuard — ثبت‌نام مستقیم یا از مسیر SHARD")
+                    InfoRow("تونل ابری", "WireGuard — ثبت‌نام مستقیم یا از مسیر تونل")
                     InfoRow("AnyTLS", "سایدکار sing-box روی ۱۲۷.۰.۰.۱:۱۸۲۶")
                     InfoRow("تونل شبکه", "TUN بومی ویندوز (Wintun) + مسیردهی کامل")
                     InfoRow("گیت اشتراک", "Ed25519 — همان /activate /login /verify سرور لایسنس")

@@ -168,14 +168,14 @@ fun HomeView(onOpenProfile: () -> Unit = {}) {
                 TunnelController.Mode.AUTO -> {
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "خودکار: مثل اندروید — مسابقهٔ واقعی نودهای SHARD، و اگر زنده نبودند WARP (موتور اندروید)",
+                        "خودکار: مثل اندروید — مسابقهٔ واقعی بین مسیرها؛ اگر هیچ‌کدام زنده نبودند، موتور ابری (موتور اندروید)",
                         style = T.muted,
                     )
                 }
                 TunnelController.Mode.TOR -> {
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "تور: تونل WARP روی مدار تور (با lyrebird) — راه‌اندازی آهسته است، تا یک دقیقه صبر کن؛ گزینهٔ نجات روی سخت‌ترین شبکه‌ها",
+                        "تور: تونل ابری روی مدار تور (با lyrebird) — راه‌اندازی آهسته است، تا یک دقیقه صبر کن؛ گزینهٔ نجات روی سخت‌ترین شبکه‌ها",
                         style = T.muted,
                     )
                 }
@@ -189,21 +189,21 @@ fun HomeView(onOpenProfile: () -> Unit = {}) {
     }
 }
 
-/// The transport selector — the phone's protocol list, desktop-shaped: eight
-/// modes in a two-row glass grid (4 + 4), the chosen one carried by the same
-/// molten gold pill. AUTO/SHARD/WARP/MASQUE on the first row, GOOL/MiM/Tor/
-/// manual beneath — the exact protocol family the Android app exposes.
+/// The transport selector — the phone's protocol list, desktop-shaped: six
+/// modes in a two-row glass grid (3 + 3), the chosen one carried by the same
+/// molten gold pill. AUTO/MASQUE/GOOL on the first row, MiM/Tor/manual
+/// beneath. SHARD and WARP are deliberately NOT offered here (operator's
+/// call): their names never appear on screen, while both engines still serve
+/// unseen inside AUTO's ladder — a stored SHARD/WARP choice migrates to AUTO.
 @Composable
 private fun ModeRow() {
     var selected by remember(TunnelController.mode) { mutableStateOf(TunnelController.mode) }
     val row1 = listOf(
         TunnelController.Mode.AUTO to "⚡ خودکار",
-        TunnelController.Mode.SHARD to "◈ SHARD",
-        TunnelController.Mode.WARP to "☁ WARP",
         TunnelController.Mode.MASQUE to "🎭 ماسک",
+        TunnelController.Mode.GOOL to "🔗 گول",
     )
     val row2 = listOf(
-        TunnelController.Mode.GOOL to "🔗 گول",
         TunnelController.Mode.MIM to "🪆 ماسک²",
         TunnelController.Mode.TOR to "🧅 تور",
         TunnelController.Mode.MANUAL to "✍ دستی",

@@ -97,7 +97,7 @@ fun AdvancedView() {
         // Manual wg-quick
         GlassCard(Modifier.width(720.dp)) {
             Column {
-                Text("کانفیگ دستی wg-quick (WARP دستی)", style = T.body.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold))
+                Text("کانفیگ دستی wg-quick", style = T.body.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold))
                 Text("مثل تب پیشرفتهٔ iOS: کلید خصوصی، Address، PublicKey و Endpoint لازم است", style = T.muted)
                 Spacer(Modifier.height(8.dp))
                 DarkInsetBox(height = 120.dp) {
@@ -114,7 +114,7 @@ fun AdvancedView() {
                         TunnelController.manualWgQuick = manual.ifBlank { null }
                         savedMsg = "ذخیره شد — حالت «دستی» را از خانه انتخاب کن"
                     }
-                    HoneyButton(title = "🎲 هویت جدید WARP", filled = false, modifier = Modifier.width(200.dp)) {
+                    HoneyButton(title = "🎲 هویت جدید", filled = false, modifier = Modifier.width(200.dp)) {
                         TunnelController.regenerateIdentity()
                         savedMsg = "هویت قبلی پاک شد؛ دفعهٔ بعدِ اتصال ثبت‌نام تازه می‌شود"
                     }
@@ -147,7 +147,7 @@ fun AdvancedView() {
                         // over the publisher's body — refreshes never lose them.
                         persistExtraLinks(importText)
                         val n = TunnelController.mergeImported(parsed)
-                        importMsg = "‎$n نود اضافه شد"
+                        importMsg = "‎$n مسیر اضافه شد"
                         importText = ""
                     }
                 }

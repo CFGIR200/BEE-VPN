@@ -74,7 +74,6 @@ import com.beevpn.win.ui.GlassChip
 import com.beevpn.win.ui.HomeView
 import com.beevpn.win.ui.Honey
 import com.beevpn.win.ui.NavItem
-import com.beevpn.win.ui.NodesView
 import com.beevpn.win.ui.SubscriptionView
 import com.beevpn.win.ui.T
 
@@ -154,7 +153,6 @@ private fun maybeRelaunchElevated() {
 
 private enum class Tab(val label: String, val icon: String) {
     HOME("خانه", "⏻"),
-    NODES("نودها", "◈"),
     SUBSCRIPTION("اشتراک", "◆"),
     ADVANCED("پیشرفته", "⚙"),
     ABOUT("درباره", "ℹ"),
@@ -335,7 +333,6 @@ private fun AppRoot() {
                         key == "gate" -> GateView()
                         else -> when (tab) {
                             Tab.HOME -> HomeView(onOpenProfile = { tab = Tab.SUBSCRIPTION })
-                            Tab.NODES -> NodesView()
                             Tab.SUBSCRIPTION -> SubscriptionView()
                             Tab.ADVANCED -> AdvancedView()
                             Tab.ABOUT -> AboutView()
