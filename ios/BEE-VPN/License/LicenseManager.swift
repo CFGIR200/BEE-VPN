@@ -10,7 +10,7 @@ import Combine
 ///   * entitlement() re-verifies the token OFFLINE on every read (signature +
 ///     device binding + clock) — the app keeps working until the token's own
 ///     `e`, exactly like Android,
-///   * verifyInBackground() runs /verify every ~6 h and on foreground so
+///   * verifyInBackground() runs /verify every 6 h and on foreground so
 ///     revocation and admin extends propagate (Android uses ~12 h; a tighter
 ///     iOS cadence costs one tiny request).
 @MainActor
@@ -171,6 +171,19 @@ final class LicenseManager: ObservableObject {
     }
 
     // ------------------------------------------------- subscription info
+
+    /// One-line summary for the Settings SUBSCRIPTION row — the same shape
+    /// Android prints under the row ("%d days left" / "Not active").
+    var subscriptionSummary: String {
+        guard isConfigured else { return BeeStrings.t("Not active") }
+        guard let token = storedToken,
+              let e = BeeCrypto.verifyToken(token, pubKeyB64: BeeConfig.licensePubKeyB64, installId: installId) else {
+            return BeeStrings.t("Not active")
+        }
+        let now = Int64(Date().timeIntervalSince1970)
+        let days = max(0, Int((e.expiry - now) / 86_400))
+        return BeeStrings.tf("%d days left", faDigits("\(days)"))
+    }
 
     /// The same numbers the VPN gate enforces — the profile screen reads this,
     /// so the profile can never disagree with the gate (like Android's

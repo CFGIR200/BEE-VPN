@@ -9,8 +9,8 @@ settings:
   base:
     CODE_SIGN_STYLE: Automatic
     ENABLE_USER_SCRIPT_SANDBOXING: NO
-    MARKETING_VERSION: "3.6.4"
-    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "3.6.10"
+    CURRENT_PROJECT_VERSION: "471"
     GENERATE_INFOPLIST_FILE: NO
     SWIFT_VERSION: "5.9"
 
@@ -63,6 +63,8 @@ targets:
       properties:
         com.apple.developer.networking.networkextension:
           - packet-tunnel-provider
+        com.apple.security.application-groups:
+          - group.app.beevpn
 
   BeeTunnel:
     type: app-extension
@@ -90,6 +92,8 @@ targets:
       properties:
         com.apple.developer.networking.networkextension:
           - packet-tunnel-provider
+        com.apple.security.application-groups:
+          - group.app.beevpn
 
 schemes:
   BEE-VPN:

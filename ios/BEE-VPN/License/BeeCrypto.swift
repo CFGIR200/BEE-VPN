@@ -51,4 +51,23 @@ enum BeeCrypto {
         return Entitlement(subject: subject, kind: kind, plan: plan,
                            installId: install, expiry: expiry, issuedAt: issued)
     }
+
+    /// Display-only payload read WITHOUT signature/expiry/device checks — the
+    /// subscription screen uses it to tell an expired token apart from a
+    /// missing one, the way Android's SubscriptionInfoActivity does. Never
+    /// makes an entitlement decision.
+    static func decodePayload(_ token: String) -> Entitlement? {
+        let parts = token.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 3, parts[0] == "v1",
+              let payload = b64urlDecode(parts[1]),
+              let obj = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any],
+              let subject = obj["s"] as? String,
+              let kind = obj["k"] as? String,
+              let plan = obj["p"] as? String,
+              let install = obj["i"] as? String,
+              let expiry = (obj["e"] as? NSNumber)?.int64Value,
+              let issued = (obj["t"] as? NSNumber)?.int64Value else { return nil }
+        return Entitlement(subject: subject, kind: kind, plan: plan,
+                           installId: install, expiry: expiry, issuedAt: issued)
+    }
 }

@@ -7,34 +7,35 @@ import UIKit
 /// Deliberately OFFLINE: it reads the Ed25519-verified token already on the
 /// device, so the profile can never disagree with the gate.
 struct SubscriptionView: View {
+    @Environment(\.beePalette) private var palette
     @ObservedObject private var license = LicenseManager.shared
 
     var body: some View {
         ZStack {
-            Honey.canvas.ignoresSafeArea()
+            palette.canvas.ignoresSafeArea()
             ScrollView {
                 VStack(spacing: 16) {
                     Text("🐝")
                         .font(.system(size: 40))
                     Text("BEE-VPN")
                         .font(.system(size: 24, weight: .heavy))
-                        .foregroundColor(Honey.primary)
-                    Text("اشتراک")
+                        .foregroundColor(palette.primary)
+                    Text(BeeStrings.t("Subscription"))
                         .font(.system(size: 15))
-                        .foregroundColor(Honey.ink)
+                        .foregroundColor(palette.ink)
 
                     if !info.configured {
-                        Text("این نسخه بدون سرور لایسنس ساخته شده است")
+                        Text(BeeStrings.t("This build was made without a license server"))
                             .font(.system(size: 14.5))
-                            .foregroundColor(Honey.muted)
+                            .foregroundColor(palette.muted)
                             .padding(.top, 24)
                     } else {
                         hero
                         rows
                         actions
-                        Text("هر اشتراک فقط به یک دستگاه وصل است. گوشی را عوض کردی؟ برای انتقال از پشتیبانی بخواه.")
+                        Text(BeeStrings.t("Every subscription is bound to exactly one device. Changed your phone? Ask support for a reset."))
                             .font(.system(size: 12))
-                            .foregroundColor(Honey.muted)
+                            .foregroundColor(palette.muted)
                             .multilineTextAlignment(.center)
                             .padding(.top, 18)
                     }
@@ -42,27 +43,39 @@ struct SubscriptionView: View {
                 .padding(24)
             }
         }
-        .preferredColorScheme(.dark)
         .onAppear { license.verifyInBackground() }
     }
 
     private var info: LicenseManager.SubscriptionInfo { license.subscriptionInfo() }
 
+    /// Expired vs missing: decodePayload reads the (already-signed-at-issue)
+    /// payload for display only — the gate itself keeps trusting verifyToken.
+    private var expiredToken: Bool {
+        guard !info.hasToken, let token = license.storedToken else { return false }
+        guard let payload = BeeCrypto.decodePayload(token) else { return false }
+        return payload.expiry <= nowSec()
+    }
+
     private var hero: some View {
         VStack(spacing: 8) {
             if info.hasToken {
                 let daysLeft = Int((info.expiryEpochSec - nowSec()) / 86400) + 1
-                Text("✅ اشتراک فعال")
+                Text("✅ " + BeeStrings.t("Subscription active"))
                     .font(.system(size: 18, weight: .bold))
-                    .foregroundColor(Honey.ok)
-                Text(faDigits("\(daysLeft)") + " روز باقی مانده")
+                    .foregroundColor(palette.ok)
+                Text(BeeStrings.tf("%d days left", faDigits("\(daysLeft)")))
                     .font(.system(size: 15))
-                    .foregroundColor(Honey.ink)
+                    .foregroundColor(palette.ink)
                 progressBar
-            } else {
-                Text("⚠️ اشتراک فعالی روی این دستگاه نیست")
+            } else if expiredToken {
+                Text("❌ " + BeeStrings.t("Subscription expired"))
                     .font(.system(size: 16.5, weight: .semibold))
-                    .foregroundColor(Honey.danger)
+                    .foregroundColor(palette.danger)
+                    .multilineTextAlignment(.center)
+            } else {
+                Text("⚠️ " + BeeStrings.t("No active subscription on this device"))
+                    .font(.system(size: 16.5, weight: .semibold))
+                    .foregroundColor(palette.danger)
                     .multilineTextAlignment(.center)
             }
         }
@@ -78,8 +91,8 @@ struct SubscriptionView: View {
             let fraction = max(CGFloat(elapsed / total), 0.02)
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 4).fill(Honey.track)
-                    RoundedRectangle(cornerRadius: 4).fill(Honey.primary)
+                    RoundedRectangle(cornerRadius: 4).fill(palette.track)
+                    RoundedRectangle(cornerRadius: 4).fill(palette.primary)
                         .frame(width: geo.size.width * fraction)
                 }
             }
@@ -90,25 +103,26 @@ struct SubscriptionView: View {
 
     private var rows: some View {
         VStack(spacing: 8) {
-            InfoRow(title: "وضعیت", value: info.hasToken ? "فعال" : "—",
-                    valueColor: info.hasToken ? Honey.ok : Honey.muted)
-            InfoRow(title: "پلن", value: planLabel)
-            InfoRow(title: "تاریخ انقضا", value: expiryLine)
-            InfoRow(title: "شروع دوره", value: startLine)
-            InfoRow(title: "نوع", value: kindLabel)
-            InfoRow(title: "شناسه", value: info.subject.isEmpty ? "—" : info.subject)
-            InfoRow(title: "دستگاه", value: String(info.installId.prefix(12)) + "…")
-            InfoRow(title: "آخرین بررسی", value: checkLine)
+            InfoRow(title: BeeStrings.t("Status"),
+                    value: info.hasToken ? BeeStrings.t("Active") : (expiredToken ? BeeStrings.t("Expired") : "—"),
+                    valueColor: info.hasToken ? palette.ok : (expiredToken ? palette.danger : palette.muted))
+            InfoRow(title: BeeStrings.t("Plan"), value: planLabel)
+            InfoRow(title: BeeStrings.t("Expiry date"), value: expiryLine)
+            InfoRow(title: BeeStrings.t("Term start"), value: startLine)
+            InfoRow(title: BeeStrings.t("Type"), value: kindLabel)
+            InfoRow(title: BeeStrings.t("ID"), value: info.subject.isEmpty ? "—" : info.subject)
+            InfoRow(title: BeeStrings.t("Device"), value: String(info.installId.prefix(12)) + "…")
+            InfoRow(title: BeeStrings.t("Last verified"), value: checkLine)
         }
         .padding(.top, 4)
     }
 
     private var actions: some View {
         VStack(spacing: 10) {
-            HoneyButton(title: "🛍 خرید اشتراک", filled: true) {
+            HoneyButton(title: BeeStrings.t("🛍 Buy subscription"), filled: true) {
                 open(BeeConfig.telegramURL)
             }
-            HoneyButton(title: "🆘 پشتیبانی", filled: false) {
+            HoneyButton(title: BeeStrings.t("🆘 Support"), filled: false) {
                 open(BeeConfig.supportURL)
             }
         }
@@ -117,19 +131,19 @@ struct SubscriptionView: View {
 
     private var planLabel: String {
         switch info.plan {
-        case "trial": return "آزمایشی (۱ روز)"
-        case "m1": return "۱ ماهه"
-        case "m3": return "۳ ماهه"
-        case "m6": return "۶ ماهه"
-        case "m12": return "۱۲ ماهه"
+        case "trial": return BeeStrings.t("Trial (1 day)")
+        case "m1": return BeeStrings.t("1 month")
+        case "m3": return BeeStrings.t("3 months")
+        case "m6": return BeeStrings.t("6 months")
+        case "m12": return BeeStrings.t("12 months")
         default: return "—"
         }
     }
 
     private var kindLabel: String {
         switch info.kind {
-        case "code": return "کد فعال‌سازی"
-        case "account": return "حساب کاربری"
+        case "code": return BeeStrings.t("Activation code")
+        case "account": return BeeStrings.t("Account")
         default: return "—"
         }
     }
@@ -137,17 +151,17 @@ struct SubscriptionView: View {
     private var expiryLine: String {
         info.expiryEpochSec > 0
             ? "\(jalaliString(info.expiryEpochSec))  (\(gregorianString(info.expiryEpochSec)))"
-            : "هنوز شروع نشده — ساعت از اولین فعال‌سازی می‌چرخد"
+            : BeeStrings.t("Clock starts at first activation")
     }
 
     private var startLine: String {
         info.activatedAtEpochSec > 0
             ? jalaliString(info.activatedAtEpochSec)
-            : "هنوز شروع نشده — ساعت از اولین فعال‌سازی می‌چرخد"
+            : BeeStrings.t("Clock starts at first activation")
     }
 
     private var checkLine: String {
-        info.lastCheckEpochSec > 0 ? jalaliString(info.lastCheckEpochSec) : "بررسی نشده"
+        info.lastCheckEpochSec > 0 ? jalaliString(info.lastCheckEpochSec) : BeeStrings.t("Never checked")
     }
 
     private func nowSec() -> Int64 { Int64(Date().timeIntervalSince1970) }

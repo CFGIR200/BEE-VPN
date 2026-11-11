@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-// MARK: - Honey palette (mirrors SubscriptionInfoActivity / LicenseGateActivity)
+// MARK: - Honey palettes (dark mirrors SubscriptionInfoActivity / LicenseGateActivity)
 
 extension Color {
     init(hex: UInt32) {
@@ -12,6 +12,7 @@ extension Color {
     }
 }
 
+/// The dark honey palette — the original BEE-VPN look.
 enum Honey {
     static let canvas = Color(hex: 0x04070B)
     static let surface = Color(hex: 0x0B1116)
@@ -22,6 +23,83 @@ enum Honey {
     static let danger = Color(hex: 0xFF6B7F)
     static let ok = Color(hex: 0x59D98E)
     static let track = Color(hex: 0x141C22)
+}
+
+/// Semantic palette resolved from the Appearance section (system/light/dark —
+/// the same three options the Android Appearance screen offers).
+struct Palette {
+    let canvas: Color
+    let surface: Color
+    let divider: Color
+    let ink: Color
+    let muted: Color
+    let primary: Color
+    let danger: Color
+    let ok: Color
+    let track: Color
+
+    static let dark = Palette(
+        canvas: Honey.canvas, surface: Honey.surface, divider: Honey.divider,
+        ink: Honey.ink, muted: Honey.muted, primary: Honey.primary,
+        danger: Honey.danger, ok: Honey.ok, track: Honey.track)
+
+    static let light = Palette(
+        canvas: Color(hex: 0xF8F4EA),
+        surface: Color(hex: 0xFFFFFF),
+        divider: Color(hex: 0xE3DAC8),
+        ink: Color(hex: 0x221A0D),
+        muted: Color(hex: 0x6E6354),
+        primary: Color(hex: 0xE0A400),
+        danger: Color(hex: 0xC93A5C),
+        ok: Color(hex: 0x1F9D5B),
+        track: Color(hex: 0xEEE7D7))
+}
+
+private struct BeePaletteKey: EnvironmentKey {
+    static let defaultValue: Palette = .dark
+}
+
+extension EnvironmentValues {
+    var beePalette: Palette {
+        get { self[BeePaletteKey.self] }
+        set { self[BeePaletteKey.self] = newValue }
+    }
+}
+
+/// Theme + language chooser state. Theme follows the Android Appearance
+/// section ("Follow system" / روشن / تاریک); language is en/fa with the
+/// one-time picker, exactly like the Android language flow.
+@MainActor
+final class AppStyle: ObservableObject {
+    static let shared = AppStyle()
+
+    @Published var theme: String {
+        didSet { UserDefaults.standard.set(theme, forKey: "app_theme") }
+    }
+    @Published var language: String {
+        didSet { BeeStrings.language = language }
+    }
+
+    private init() {
+        theme = UserDefaults.standard.string(forKey: "app_theme") ?? "dark"
+        language = BeeStrings.language
+    }
+
+    var resolvedScheme: ColorScheme? {
+        switch theme {
+        case "light": return .light
+        case "dark": return .dark
+        default: return nil
+        }
+    }
+
+    var themeLabel: String {
+        switch theme {
+        case "light": return BeeStrings.t("Light — theme")
+        case "dark": return BeeStrings.t("Dark")
+        default: return BeeStrings.t("Follow system")
+        }
+    }
 }
 
 // MARK: - Persian digits & dates (ported 1:1 from the Android app)
@@ -72,14 +150,16 @@ func jalaliString(_ epochSec: Int64) -> String {
     return faDigits(String(format: "%04d/%02d/%02d", jy, jm, jd))
 }
 
-// MARK: - Shared components
+// MARK: - Shared components (palette-aware)
 
 struct HoneyCard: ViewModifier {
+    @Environment(\.beePalette) private var palette
+
     func body(content: Content) -> some View {
         content
             .padding(14)
-            .background(RoundedRectangle(cornerRadius: 14).fill(Honey.surface))
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Honey.divider, lineWidth: 1))
+            .background(RoundedRectangle(cornerRadius: 14).fill(palette.surface))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(palette.divider, lineWidth: 1))
     }
 }
 
@@ -88,28 +168,30 @@ extension View {
 }
 
 struct InfoRow: View {
+    @Environment(\.beePalette) private var palette
     let title: String
     let value: String
-    var valueColor: Color = Honey.ink
+    var valueColor: Color?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
                 .font(.system(size: 12))
-                .foregroundColor(Honey.muted)
+                .foregroundColor(palette.muted)
             Text(value)
                 .font(.system(size: 15, weight: .semibold))
-                .foregroundColor(valueColor)
+                .foregroundColor(valueColor ?? palette.ink)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Honey.surface))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Honey.divider, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: 12).fill(palette.surface))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(palette.divider, lineWidth: 1))
     }
 }
 
 struct HoneyButton: View {
+    @Environment(\.beePalette) private var palette
     let title: String
     var filled: Bool = true
     let action: () -> Void
@@ -118,16 +200,16 @@ struct HoneyButton: View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 15, weight: .semibold))
-                .foregroundColor(filled ? Honey.canvas : Honey.primary)
+                .foregroundColor(filled ? palette.canvas : palette.primary)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 13)
                 .background(
                     RoundedRectangle(cornerRadius: 14)
-                        .fill(filled ? Honey.primary : Honey.surface)
+                        .fill(filled ? palette.primary : palette.surface)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 14)
-                        .stroke(filled ? Color.clear : Honey.primary, lineWidth: 1)
+                        .stroke(filled ? Color.clear : palette.primary, lineWidth: 1)
                 )
         }
         .buttonStyle(.plain)
@@ -138,11 +220,11 @@ struct HoneyButton: View {
 
 struct MonoEditor: UIViewRepresentable {
     @Binding var text: String
+    @Environment(\.beePalette) private var palette
 
     func makeUIView(context: Context) -> UITextView {
         let view = UITextView()
         view.backgroundColor = .clear
-        view.textColor = UIColor(red: 0.92, green: 0.96, blue: 0.95, alpha: 1) // HONEY_INK
         view.autocapitalizationType = .none
         view.autocorrectionType = .no
         view.smartQuotesType = .no
@@ -155,6 +237,8 @@ struct MonoEditor: UIViewRepresentable {
         if view.text != text {
             view.text = text
         }
+        view.textColor = UIColor(palette.ink)
+        view.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }

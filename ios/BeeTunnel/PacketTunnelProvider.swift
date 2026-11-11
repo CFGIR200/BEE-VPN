@@ -4,18 +4,29 @@ import WireGuardKit
 import os
 
 /// The packet-tunnel extension: feeds the wg-quick config the app saved into
-/// WireGuardKit's Go-backed adapter and installs the network settings.
+/// WireGuardKit's Go-backed adapter, which installs the complete network
+/// settings derived from the parsed TunnelConfiguration (addresses, routes,
+/// DNS, MTU) — the app-side routing overlays (bypass Iran / LAN / DNS / MTU /
+/// endpoint) are already baked into the AllowedIPs and lines before they get
+/// here, so the extension has no settings of its own to second-guess.
 ///
 /// The Go bridge (libwg-go.a) is built from WireGuardKitGo by
-/// Scripts/… on CI (see ios/README-FA.md) and linked through
-/// LIBRARY_SEARCH_PATHS in project.yml.
+/// Scripts/prepare-wireguard.sh on CI (see ios/README-FA.md) and linked
+/// through LIBRARY_SEARCH_PATHS in project.yml.
 class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private static let log = OSLog(subsystem: "app.beevpn.tunnel", category: "wireguard")
 
+    /// The shared container the Logs screen reads — the tunnel-side stream,
+    /// the way Android's Logs screen carries the core stream.
+    private static let groupIdentifier = "group.app.beevpn"
+    private static let logFile = "tunnel.log"
+    private static let logCapBytes = 256 * 1024
+
     private lazy var adapter = WireGuardAdapter(with: self, logHandler: { level, message in
         let levelName = (level == .verbose) ? "debug" : "error"
         os_log("[%{public}@] %{public}@", log: PacketTunnelProvider.log, type: .default, levelName, message)
+        Self.appendLog("\(levelName): \(message)")
     })
 
     private enum ProviderError: Error {
@@ -24,11 +35,13 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
     override func startTunnel(options: [String: NSObject]?,
                               completionHandler: @escaping (Error?) -> Void) {
+        Self.appendLog("tunnel starting")
         guard let protocolConfiguration = protocolConfiguration as? NETunnelProviderProtocol,
               let providerConfiguration = protocolConfiguration.providerConfiguration,
               let wgQuickConfig = providerConfiguration["WgQuickConfig"] as? String,
               !wgQuickConfig.isEmpty else {
             os_log("no WgQuickConfig in provider configuration", log: Self.log, type: .error)
+            Self.appendLog("failed: no WgQuickConfig in provider configuration")
             completionHandler(ProviderError.couldNotDetermineWireGuardConfiguration)
             return
         }
@@ -38,28 +51,24 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             tunnelConfiguration = try TunnelConfiguration(fromWgQuickConfig: wgQuickConfig)
         } catch {
             os_log("invalid WireGuard configuration: %{public}@", log: Self.log, type: .error, "\(error)")
+            Self.appendLog("failed: invalid WireGuard configuration")
             completionHandler(error)
             return
         }
 
-        let settings = Self.networkSettings(from: providerConfiguration)
-        setTunnelNetworkSettings(settings) { [weak self] error in
-            guard let self else { return }
-            if let error {
-                os_log("setTunnelNetworkSettings failed: %{public}@", log: Self.log, type: .error, "\(error)")
-                completionHandler(error)
-                return
+        adapter.start(tunnelConfiguration: tunnelConfiguration) { [weak self] adapterError in
+            if let adapterError {
+                os_log("adapter start failed: %{public}@", log: Self.log, type: .error, "\(adapterError)")
+                Self.appendLog("adapter start failed: \(adapterError)")
+            } else {
+                Self.appendLog("adapter started — WireGuard data plane is up")
             }
-            self.adapter.start(tunnelConfiguration: tunnelConfiguration) { adapterError in
-                if let adapterError {
-                    os_log("adapter start failed: %{public}@", log: Self.log, type: .error, "\(adapterError)")
-                }
-                completionHandler(adapterError)
-            }
+            completionHandler(adapterError)
         }
     }
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
+        Self.appendLog("tunnel stopping (reason \(reason.rawValue))")
         adapter.stop { _ in }
         super.stopTunnel(with: reason, completionHandler: completionHandler)
     }
@@ -72,70 +81,50 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         completionHandler?("pong".data(using: .utf8))
     }
 
-    // ------------------------------------------------------------- settings
+    // ------------------------------------------------------------- logging
 
-    /// Builds the packet-tunnel network settings from plain strings the app
-    /// stashed in providerConfiguration ("AddressV4", "AddressV6", "DNS",
-    /// "MTU", "Endpoint") — no dependency on TunnelConfiguration accessors.
-    static func networkSettings(from providerConfiguration: [String: Any]) -> NEPacketTunnelNetworkSettings {
-        let endpoint = providerConfiguration["Endpoint"] as? String ?? WarpEndpoint.defaultEndpoint
-        let host = endpoint.split(separator: ":").dropLast().joined(separator: ":")
-        let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: host.isEmpty ? "162.159.192.1" : String(host))
-
-        let v4 = (providerConfiguration["AddressV4"] as? String) ?? ""
-        let v6 = (providerConfiguration["AddressV6"] as? String) ?? ""
-
-        let v4Pairs = v4.split(separator: ",").map(String.init).map(cidrParse)
-        let v4Valid = v4Pairs.filter { $0 != nil }.map { $0! }
-        if !v4Valid.isEmpty {
-            let ipv4 = NEIPv4Settings(
-                addresses: v4Valid.map { $0.address },
-                subnetMasks: v4Valid.map { Self.ipv4SubnetMask($0.prefix) })
-            ipv4.includedRoutes = [NEIPv4Route(destinationAddress: "0.0.0.0", subnetMask: "0.0.0.0")]
-            settings.ipv4Settings = ipv4
+    /// Appends to the shared-container log with the same 256 KB rolling cap
+    /// and token redaction rules Android's ConnectionLog keeps.
+    private static func appendLog(_ line: String) {
+        guard let dir = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: groupIdentifier) else { return }
+        let url = dir.appendingPathComponent(logFile)
+        let stamp: String = {
+            let fmt = DateFormatter()
+            fmt.dateFormat = "HH:mm:ss"
+            fmt.timeZone = TimeZone(identifier: "UTC")
+            return fmt.string(from: Date())
+        }()
+        let stamped = "[\(stamp)] \(redact(line))\n"
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            _ = try? handle.write(contentsOf: Data(stamped.utf8))
+        } else {
+            try? Data(stamped.utf8).write(to: url)
         }
-
-        let v6Pairs = v6.split(separator: ",").map(String.init).map(cidrParse)
-        let v6Valid = v6Pairs.filter { $0 != nil }.map { $0! }
-        if !v6Valid.isEmpty {
-            let ipv6 = NEIPv6Settings(
-                addresses: v6Valid.map { $0.address },
-                networkPrefixLengths: v6Valid.map { NSNumber(value: $0.prefix) })
-            ipv6.includedRoutes = [NEIPv6Route(destinationAddress: "::", networkPrefixLength: 0)]
-            settings.ipv6Settings = ipv6
-        }
-
-        let dns = ((providerConfiguration["DNS"] as? String) ?? "1.1.1.1,1.0.0.1")
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-        if !dns.isEmpty {
-            settings.dnsSettings = NEDNSSettings(servers: dns)
-        }
-
-        let mtu = Int(providerConfiguration["MTU"] as? String ?? "1280") ?? 1280
-        settings.mtu = NSNumber(value: mtu > 0 ? mtu : 1280)
-        return settings
+        trim(url: url)
     }
 
-    /// "172.16.0.2/32" → ("172.16.0.2", 32)
-    private static func cidrParse(_ cidr: String) -> (address: String, prefix: UInt8)? {
-        let parts = cidr.split(separator: "/")
-        guard let address = parts.first, !address.isEmpty else { return nil }
-        let prefix = parts.count > 1 ? UInt8(parts[1]) : 0
-        return (String(address), prefix ?? 0)
+    /// License tokens (`v1.…`) never reach the log on disk — the same promise
+    /// Android's LogRedactor makes.
+    private static func redact(_ line: String) -> String {
+        var out = line
+        while let r = out.range(of: "v1\\.[A-Za-z0-9_\\-]+\\.[A-Za-z0-9_\\-]+", options: .regularExpression) {
+            out.replaceSubrange(r, with: "v1.[redacted]")
+        }
+        return out
     }
 
-    /// 32 → "255.255.255.255", 24 → "255.255.255.0"
-    private static func ipv4SubnetMask(_ prefix: UInt8) -> String {
-        let p = min(prefix, 32)
-        let mask: UInt32 = p == 0 ? 0 : (~UInt32(0) << (32 - UInt32(p)))
-        return [24, 16, 8, 0].map { String((mask >> $0) & 0xFF) }.joined(separator: ".")
+    private static func trim(url: URL) {
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int,
+              size > logCapBytes,
+              let data = try? Data(contentsOf: url) else { return }
+        let keep = data.suffix(logCapBytes / 2)
+        if let nl = keep.firstIndex(of: 0x0A) {
+            try? keep[(keep.index(after: nl))...].write(to: url)
+        } else {
+            try? keep.write(to: url)
+        }
     }
-}
-
-/// Endpoint defaults shared with the app process (kept literal here so the
-/// extension never depends on app-side types).
-private enum WarpEndpoint {
-    static let defaultEndpoint = "engage.cloudflareclient.com:2408"
 }

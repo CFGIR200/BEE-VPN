@@ -1,9 +1,12 @@
 import SwiftUI
 import UIKit
 
-/// The activation gate — two tabs (activation code / account), the same flow
-/// and the same honey palette as LicenseGateActivity on Android.
+/// The activation gate — two tabs (activation code / account), the same flow,
+/// copy and honey palette as LicenseGateActivity on Android, including the
+/// three links: buy, trial, support.
 struct GateView: View {
+    @Environment(\.beePalette) private var palette
+
     // Not private: the memberwise initializer must stay internal for RootView.
     @ObservedObject var license = LicenseManager.shared
 
@@ -21,74 +24,76 @@ struct GateView: View {
 
     var body: some View {
         ZStack {
-            Honey.canvas.ignoresSafeArea()
+            palette.canvas.ignoresSafeArea()
             ScrollView {
                 VStack(spacing: 18) {
                     Text("🐝")
                         .font(.system(size: 44))
                     Text("BEE-VPN")
                         .font(.system(size: 28, weight: .heavy))
-                        .foregroundColor(Honey.primary)
-                    Text("اشتراک را فعال کن تا استفاده کنی")
+                        .foregroundColor(palette.primary)
+                    Text(BeeStrings.t("Activate your subscription to use BEE-VPN"))
                         .font(.system(size: 15))
-                        .foregroundColor(Honey.ink)
+                        .foregroundColor(palette.ink)
 
                     picker
                     if let notice {
                         Text(notice)
                             .font(.system(size: 13.5, weight: .semibold))
-                            .foregroundColor(Honey.danger)
+                            .foregroundColor(palette.danger)
                             .multilineTextAlignment(.center)
                     }
                     inputCard
                     if let error {
                         Text(error)
                             .font(.system(size: 13.5))
-                            .foregroundColor(Honey.danger)
+                            .foregroundColor(palette.danger)
                             .multilineTextAlignment(.center)
                     }
-                    HoneyButton(title: busy ? "در حال فعال‌سازی…" : "فعال‌سازی", filled: true) {
+                    HoneyButton(title: busy ? BeeStrings.t("Activating…") : BeeStrings.t("Activate"), filled: true) {
                         Task { await submit() }
                     }
                     .disabled(busy)
 
-                    HoneyButton(title: "🛍 خرید اشتراک", filled: false) {
+                    HoneyButton(title: BeeStrings.t("🛍 Buy subscription"), filled: false) {
                         open(BeeConfig.telegramURL)
                     }
-                    HoneyButton(title: "🆘 پشتیبانی", filled: false) {
+                    HoneyButton(title: BeeStrings.t("🎁 1-day free trial"), filled: false) {
+                        open(BeeConfig.telegramURL)
+                    }
+                    HoneyButton(title: BeeStrings.t("🆘 Support"), filled: false) {
                         open(BeeConfig.supportURL)
                     }
                     if !license.isConfigured {
-                        Text("این نسخه بدون سرور لایسنس ساخته شده است")
+                        Text(BeeStrings.t("This build was made without a license server"))
                             .font(.system(size: 12))
-                            .foregroundColor(Honey.muted)
+                            .foregroundColor(palette.muted)
                     }
                 }
                 .padding(24)
             }
         }
-        .preferredColorScheme(.dark)
     }
 
     private var picker: some View {
         HStack(spacing: 8) {
-            segment("کد فعال‌سازی", selected: tab == .code) { tab = .code }
-            segment("حساب کاربری", selected: tab == .account) { tab = .account }
+            segment(BeeStrings.t("Activation code"), selected: tab == .code) { tab = .code }
+            segment(BeeStrings.t("Account"), selected: tab == .account) { tab = .account }
         }
         .padding(6)
-        .background(RoundedRectangle(cornerRadius: 14).fill(Honey.surface))
+        .background(RoundedRectangle(cornerRadius: 14).fill(palette.surface))
     }
 
     private func segment(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 14, weight: selected ? .bold : .regular))
-                .foregroundColor(selected ? Honey.canvas : Honey.muted)
+                .foregroundColor(selected ? palette.canvas : palette.muted)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 9)
                 .background(
                     RoundedRectangle(cornerRadius: 10)
-                        .fill(selected ? Honey.primary : Color.clear)
+                        .fill(selected ? palette.primary : Color.clear)
                 )
         }
         .buttonStyle(.plain)
@@ -99,27 +104,27 @@ struct GateView: View {
             if tab == .code {
                 TextField("BEE-XXXX-XXXX-XXXX", text: $code)
                     .font(.system(size: 17, weight: .semibold, design: .monospaced))
-                    .foregroundColor(Honey.ink)
+                    .foregroundColor(palette.ink)
                     .textInputAutocapitalization(.characters)
                     .disableAutocorrection(true)
                     .padding(14)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(Honey.track))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Honey.divider, lineWidth: 1))
+                    .background(RoundedRectangle(cornerRadius: 12).fill(palette.track))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(palette.divider, lineWidth: 1))
             } else {
-                TextField("نام کاربری", text: $username)
+                TextField(BeeStrings.t("Username"), text: $username)
                     .font(.system(size: 16))
-                    .foregroundColor(Honey.ink)
+                    .foregroundColor(palette.ink)
                     .disableAutocorrection(true)
                     .textInputAutocapitalization(.never)
                     .padding(14)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(Honey.track))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Honey.divider, lineWidth: 1))
-                SecureField("رمز عبور", text: $password)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(palette.track))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(palette.divider, lineWidth: 1))
+                SecureField(BeeStrings.t("Password"), text: $password)
                     .font(.system(size: 16))
-                    .foregroundColor(Honey.ink)
+                    .foregroundColor(palette.ink)
                     .padding(14)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(Honey.track))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Honey.divider, lineWidth: 1))
+                    .background(RoundedRectangle(cornerRadius: 12).fill(palette.track))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(palette.divider, lineWidth: 1))
             }
         }
         .honeyCard()

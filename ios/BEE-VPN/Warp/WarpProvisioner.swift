@@ -14,19 +14,24 @@ struct WarpIdentity: Codable {
     var endpoint: String        // WireGuard UDP endpoint host:port
 }
 
+enum ProvisionError: LocalizedError {
+    case network(String)
+    var errorDescription: String? { switch self { case .network(let m): return m } }
+}
+
 /// Registers WARP identities and turns them into wg-quick configurations.
 ///
-/// iOS v1 speaks to the registration API directly (the route most carriers
-/// leave open). The Android app's extra escape hatches — the HMAC relay
-/// Workers, SHARD nodes, ECH fronting — remain Android-side transports; here
-/// the fallback for a hostile network is the manual wg-quick config in the
-/// Advanced tab.
+/// iOS speaks to the registration API directly (the "Native Link" route in
+/// the Android Identity Vault — the only method that needs no Android-core
+/// transport). The other vault routes — the HMAC relay Workers, Quantum ECH,
+/// registration through SHARD — stay Android-side; the fallback for a
+/// hostile network is the manual wg-quick paste in the Advanced tab.
 enum WarpProvisioner {
 
     static let registerURL = URL(string: "https://api.cloudflareclient.com/v0a4471/reg")!
     static let defaultEndpoint = "engage.cloudflareclient.com:2408"
     /// Wire ports the Ptech-quality WARP surfaces actually answer on — the
-    /// same ladder CoreConfig.kt uses.
+    /// same ladder CoreConfig.kt climbs (TunnelController runs it).
     static let portLadder = [2408, 500, 1701, 4500]
 
     static let keychainKey = "warp.identity"
@@ -43,8 +48,15 @@ enum WarpProvisioner {
         }
     }
 
-    static func purge() {
+    /// Drops the registered identity only — the manual wg-quick paste in the
+    /// Advanced tab survives, exactly like Android's "Reset identity" keeps
+    /// the manual config.
+    static func purgeIdentity() {
         KeychainStore.remove(keychainKey)
+    }
+
+    static func purge() {
+        purgeIdentity()
         KeychainStore.remove(manualKey)
     }
 
@@ -83,7 +95,7 @@ enum WarpProvisioner {
         }
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let code = (response as? HTTPURLResponse)?.statusCode ?? -1
-            throw ProvisionError.network("سرور WARP کد \(code) برگرداند — کمی بعد یا با تنظیم دستی تلاش کن")
+            throw ProvisionError.network("سرور WARP کد \(faDigits("\(code)")) برگرداند — کمی بعد یا با تنظیم دستی تلاش کن")
         }
         guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let deviceId = obj["id"] as? String,
@@ -111,11 +123,6 @@ enum WarpProvisioner {
         return identity
     }
 
-    enum ProvisionError: LocalizedError {
-        case network(String)
-        var errorDescription: String? { switch self { case .network(let m): return m } }
-    }
-
     /// Builds the wg-quick configuration the tunnel provider consumes.
     static func buildWGQuick(_ identity: WarpIdentity) -> String {
         func withPrefix(_ addr: String, prefix: String) -> String {
@@ -141,8 +148,23 @@ enum WarpProvisioner {
         return lines.joined(separator: "\n")
     }
 
-    /// The configuration the tunnel should run: a manual override wins, then
-    /// the registered identity, and registration happens lazily on connect.
+    /// The base wg-quick text before the profile's routing overlays
+    /// (DNS / MTU / AllowedIPs / Endpoint) are applied by TunnelConfigBuilder:
+    /// a manual paste wins, then the registered identity, and registration
+    /// happens lazily on connect.
+    static func resolveBaseConfig() async throws -> String {
+        if let manual = manualConfig() {
+            return manual
+        }
+        if saved() == nil {
+            _ = try await register()
+        }
+        guard let identity = saved() else {
+            throw ProvisionError.network("هویتی در دسترس نیست — دوباره تلاش کن یا تنظیم دستی بده")
+        }
+        return buildWGQuick(identity)
+    }
+
     static func manualConfig() -> String? {
         let m = KeychainStore.string(forKey: manualKey)
         return (m?.isEmpty == false) ? m : nil
@@ -156,22 +178,7 @@ enum WarpProvisioner {
         }
     }
 
-    /// Resolves the wg-quick config, registering a WARP identity first when
-    /// neither a manual config nor a saved identity exists. Returns
-    /// (config, endpoint host:port for display).
-    static func resolveConfig() async throws -> (config: String, endpoint: String) {
-        if let manual = manualConfig() {
-            return (manual, endpoint(ofManual: manual) ?? defaultEndpoint)
-        }
-        let identity: WarpIdentity
-        if let saved = saved() {
-            identity = saved
-        } else {
-            identity = try await register()
-        }
-        return (buildWGQuick(identity), identity.endpoint)
-    }
-
+    /// "Endpoint = host:port" → "host:port" for display and the ladder.
     static func endpoint(ofManual config: String) -> String? {
         for line in config.split(separator: "\n") {
             let parts = line.split(separator: "=", maxSplits: 1)
