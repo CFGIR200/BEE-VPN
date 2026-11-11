@@ -15,6 +15,8 @@ jobs:
     # macos-14 is retired on this account ("configuration not supported");
     # macos-15 ships Xcode 16, which is what WireGuardKit 1.0.16 needs.
     runs-on: macos-15
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -65,12 +67,14 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             archive
 
-      - name: Package unsigned IPA
+      - name: Package unsigned IPA (versioned name)
         run: |
+          VER=$(sed -n 's/.*MARKETING_VERSION: *"\([^"]*\)".*/\1/p' ios/project.yml | head -1)
+          echo "IPA version: $VER"
           mkdir -p Payload artifacts
           cp -R ios/build/BEE-VPN.xcarchive/Products/Applications/*.app Payload/
-          zip -qry artifacts/BEE-VPN-unsigned.ipa Payload
-          shasum -a 256 artifacts/BEE-VPN-unsigned.ipa > artifacts/SHA256SUMS.txt
+          zip -qry "artifacts/BEE-VPN-$VER-ios-unsigned.ipa" Payload
+          (cd artifacts && shasum -a 256 "BEE-VPN-$VER-ios-unsigned.ipa" > "BEE-VPN-$VER-ios-SHA256SUMS.txt")
           rm -rf Payload
 
       - uses: actions/upload-artifact@v4
@@ -78,3 +82,34 @@ jobs:
           name: BEE-VPN-unsigned-ipa
           path: artifacts/
           if-no-files-found: error
+
+      # The release (windows.yml creates it on tag builds) gets the IPA too —
+      # one release, all platforms. The release for the current
+      # MARKETING_VERSION is attached to; if it does not exist yet the IPA
+      # stays in Actions artifacts only. Release notes get an iOS section
+      # appended once (idempotent marker: "ios-unsigned").
+      - name: Attach IPA to the matching release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER=$(sed -n 's/.*MARKETING_VERSION: *"\([^"]*\)".*/\1/p' ios/project.yml | head -1)
+          IPA="BEE-VPN-$VER-ios-unsigned.ipa"
+          SUMS="BEE-VPN-$VER-ios-SHA256SUMS.txt"
+          TAG="v$VER"
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::warning::release $TAG does not exist — IPA stays in artifacts"
+            exit 0
+          fi
+          gh release upload "$TAG" "artifacts/$IPA" "artifacts/$SUMS" --repo "$GITHUB_REPOSITORY" --clobber
+          echo "attached $IPA and $SUMS to release $TAG"
+          BODY=$(gh release view "$TAG" --json body -q .body)
+          if ! printf '%s' "$BODY" | grep -q "ios-unsigned"; then
+            {
+              printf '%s\n' "$BODY"
+              printf '\n### iOS %s — IPA امضانشده\n' "$VER"
+              printf -- '- `%s` — نصب با Sideloadly / AltStore / TrollStore یا امضای اکانت توسعه‌دهنده — راهنمای کامل: [ios/README-FA.md](https://github.com/CFGIR200/BEE-VPN/blob/master/ios/README-FA.md)\n' "$IPA"
+              printf -- '- `%s` — چک‌سام SHA256\n' "$SUMS"
+            } > notes.md
+            gh release edit "$TAG" --notes-file notes.md --repo "$GITHUB_REPOSITORY"
+            echo "release notes updated with the iOS section"
+          fi
