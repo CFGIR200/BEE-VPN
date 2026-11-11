@@ -208,8 +208,8 @@ final class TunnelController: ObservableObject {
         defer { ladderRunning = false }
         for (index, port) in Self.portLadder.enumerated() {
             let endpoint = "\(Self.defaultEndpointHost):\(port)"
-            let progress = BeeStrings.t(" (%s of %s)", faDigits("\(index + 1)"), faDigits("\(Self.portLadder.count)"))
-            phase = .connecting(BeeStrings.t("Auto Scan") + " · " + BeeStrings.t("Trying %s", endpoint) + progress)
+            let progress = BeeStrings.tf(" (%s of %s)", faDigits("\(index + 1)"), faDigits("\(Self.portLadder.count)"))
+            phase = .connecting(BeeStrings.t("Auto Scan") + " · " + BeeStrings.tf("Trying %s", endpoint) + progress)
             if await singleConnect(endpoint: endpoint, label: endpoint) {
                 settings.lastGoodEndpoint = endpoint
                 settings.markAutoScanDone()

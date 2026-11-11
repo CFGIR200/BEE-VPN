@@ -57,7 +57,7 @@ struct SettingsView: View {
             .sheet(isPresented: $showControls) { TunnelControlsView() }
             .sheet(isPresented: $showLogs) { LogsView() }
             .sheet(isPresented: $showBackup) { BackupSheet(mode: .export) }
-            .sheet(isPresented: $showRestore) { BackupSheet(mode: .import) }
+            .sheet(isPresented: $showRestore) { BackupSheet(mode: .restore) }
             .alert(BeeStrings.t("Reset to defaults"), isPresented: $showResetConfirm) {
                 Button(BeeStrings.t("Cancel"), role: .cancel) {}
                 Button(BeeStrings.t("Reset to defaults"), role: .destructive) {
@@ -398,7 +398,7 @@ struct MtuSheet: View {
 
 /// Backup / restore — the same four-profile JSON the Android backup carries.
 struct BackupSheet: View {
-    enum Mode { case export, import }
+    enum Mode { case export, restore }
     let mode: Mode
 
     @Environment(\.beePalette) private var palette
