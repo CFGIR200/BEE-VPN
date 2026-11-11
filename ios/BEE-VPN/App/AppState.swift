@@ -33,17 +33,20 @@ final class AppSettings: ObservableObject {
     @Published private(set) var autoScanDone: Bool
 
     private init() {
-        profile = UserDefaults.standard.object(forKey: "active_profile") as? Int ?? 1
-        killSwitch = UserDefaults.standard.bool(forKey: "p\(profile)kill_switch")
-        autoReconnect = UserDefaults.standard.bool(forKey: "p\(profile)auto_reconnect")
-        bypassIran = UserDefaults.standard.bool(forKey: "p\(profile)iran_bypass")
-        lanAccess = UserDefaults.standard.object(forKey: "p\(profile)lan_access") as? Bool ?? false
-        tunnelProtocol = UserDefaults.standard.string(forKey: "p\(profile)default_protocol") ?? "wireguard"
-        manualEndpoint = UserDefaults.standard.string(forKey: "p\(profile)manual_endpoint") ?? ""
-        customDNS = UserDefaults.standard.string(forKey: "p\(profile)dns_servers") ?? ""
-        mtu = UserDefaults.standard.string(forKey: "p\(profile)mtu_wg") ?? ""
-        lastGoodEndpoint = UserDefaults.standard.string(forKey: "p\(profile)last_good_endpoint") ?? ""
-        autoScanDone = UserDefaults.standard.bool(forKey: "p\(profile)auto_scan_done")
+        // init order rule: read via a local — self.profile is not usable
+        // until every stored property is initialized.
+        let p = UserDefaults.standard.object(forKey: "active_profile") as? Int ?? 1
+        killSwitch = UserDefaults.standard.bool(forKey: "p\(p)kill_switch")
+        autoReconnect = UserDefaults.standard.bool(forKey: "p\(p)auto_reconnect")
+        bypassIran = UserDefaults.standard.bool(forKey: "p\(p)iran_bypass")
+        lanAccess = UserDefaults.standard.object(forKey: "p\(p)lan_access") as? Bool ?? false
+        tunnelProtocol = UserDefaults.standard.string(forKey: "p\(p)default_protocol") ?? "wireguard"
+        manualEndpoint = UserDefaults.standard.string(forKey: "p\(p)manual_endpoint") ?? ""
+        customDNS = UserDefaults.standard.string(forKey: "p\(p)dns_servers") ?? ""
+        mtu = UserDefaults.standard.string(forKey: "p\(p)mtu_wg") ?? ""
+        lastGoodEndpoint = UserDefaults.standard.string(forKey: "p\(p)last_good_endpoint") ?? ""
+        profile = p
+        autoScanDone = UserDefaults.standard.bool(forKey: "p\(p)auto_scan_done")
     }
 
     func switchProfile(_ index: Int) {
