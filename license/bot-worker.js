@@ -1227,6 +1227,17 @@ async function fulfillReceipt(env, cb, buyerId, plan, ts) {
     chat_id: chatId, message_id: messageId,
     text: `✅ تأیید شد — لایسنس <code>${esc(code)}</code>${username ? ` و پروفایل <code>${esc(username)}</code>` : ''} برای خریدار (id <code>${buyerId}</code>) ارسال شد.`,
   }).catch(() => {});
+  // درخواست اپراتور: کارت کامل ثبت‌نام/خرید تأییدشده برای همهٔ ادمین‌ها.
+  await notifyAdmins(env, adminRegistrationText({
+    heading: '🍯 <b>خرید تأیید شد</b> — ثبت‌نام/تمدید جدید',
+    tgId: buyerId,
+    tgName: ident.name,
+    tgUser: ident.username,
+    username,
+    password,
+    code,
+    planTitle: ((await getPrices(env))[plan] || {}).title || plan,
+  }) + `\n✅ تأییدکننده: <code>${cb.from.id}</code>`);
   return answerCb(env, cb.id, 'لایسنس صادر و ارسال شد');
 }
 
@@ -1361,6 +1372,27 @@ function credentialsText(title, username, password, extra) {
   ].join('\n');
 }
 
+/** 🔔 کارت کامل ثبت‌نام برای ادمین‌ها (درخواست اپراتور): با هر «تست ۱ روزه» یا
+ *  ثبت‌نام/خرید تأییدشده، همهٔ اطلاعات ثبت‌نام‌کننده — نام و آیدی تلگرام، نام
+ *  کاربری حساب، رمز (فقط لحظهٔ ساخت؛ بعدش فقط hash می‌ماند) و لایسنس — به همهٔ
+ *  ادمین‌ها می‌رود. ارسالش best-effort است (مثل notifyAdmins) و هیچ‌وقت جریان
+ *  اصلیِ خریدار را نبند. */
+function adminRegistrationText({ heading, tgId, tgName, tgUser, username, password, code, planTitle }) {
+  return [
+    heading,
+    '',
+    `👤 <b>ثبت‌نام‌کننده:</b> <a href="tg://user?id=${tgId}">${esc(tgName || 'بدون نام')}</a>`,
+    `🆔 شناسهٔ تلگرام: <code>${tgId}</code>`,
+    `🔖 یوزرنیم تلگرام: ${tgUser ? '@' + esc(tgUser) : '—'}`,
+    '',
+    `👤 <b>نام کاربری حساب:</b> <code>${esc(username)}</code>`,
+    ...(password ? [`🔑 <b>رمز عبور:</b> <code>${esc(password)}</code> — فقط همین‌جا نشان داده می‌شود؛ بعد از این فقط hash ذخیره است.`] : []),
+    ...(code ? [`🎫 <b>لایسنس برنامه:</b> <code>${esc(code)}</code>`] : []),
+    `📦 <b>پلن:</b> ${esc(planTitle)}`,
+    `🕒 زمان ثبت: ${esc(faJalaliTime(nowSec()))}`,
+  ].join('\n');
+}
+
 /** 📝 ثبت‌نام — the intro: what they get, then the plan keyboard. */
 async function regIntro(env, chatId) {
   return send(env, chatId, [
@@ -1421,7 +1453,8 @@ async function giveTrialAccount(env, chatId, from) {
     'INSERT INTO licenses (code, plan, status, duration_days, note, telegram_user_id, created_at) '
     + 'VALUES (?, ?, ?, ?, ?, ?, ?)',
   ).bind(licCode, 'trial', 'active', 1, `trial:${tgId}`, tgId, nowSec()).run();
-  return send(env, chatId, credentialsText('تست ۱ روزهٔ تو ساخته شد!', username, password, [
+  // اول خریدار (حساس به تأخیر)، بعد کارت ادمین‌ها.
+  const reply = await send(env, chatId, credentialsText('تست ۱ روزهٔ تو ساخته شد!', username, password, [
     '🎁 پلن: تست ۱ روزه (رایگان)',
     '',
     '🎫 <b>لایسنس برنامه (کندو قفله):</b>',
@@ -1429,6 +1462,18 @@ async function giveTrialAccount(env, chatId, from) {
     'اپ را باز کن → «کد فعال‌سازی» → این کد را وارد کن.',
     '⏱ ۲۴ ساعت از لحظهٔ فعال‌سازی در اپ شروع می‌شود.',
   ]));
+  // درخواست اپراتور: هر تست ۱ روزه با همهٔ اطلاعاتِ گیرنده به ادمین‌ها خبر داده شود.
+  await notifyAdmins(env, adminRegistrationText({
+    heading: '🎁 <b>تست ۱ روزه گرفته شد</b> — ثبت‌نام رایگان جدید',
+    tgId,
+    tgName: [from.first_name, from.last_name].filter(Boolean).join(' ').trim() || null,
+    tgUser: from.username || null,
+    username,
+    password,
+    code: licCode,
+    planTitle: 'تست ۱ روزه (رایگان)',
+  }));
+  return reply;
 }
 
 /** regplan:<paid> — same payment rails as 🛍 خرید; the pending row is stamped

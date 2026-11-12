@@ -494,5 +494,36 @@ ok(lastEditTo(222).includes('پلن موردنظر'), 'ادمین بدون ثب�
 ok(await drive(cb(222, 'trial')) === 200, 'ادمین 🎁 زد');
 ok(lastSentTo(222).includes('نام کاربری'), 'ادمین توانست بستهٔ تست بگیرد');
 
+section('T27 — اطلاع‌رسانی ثبت‌نام/تست به ادمین‌ها با تمامی اطلاعات (درخواست اپراتور)');
+// (الف) تست ۱ روزه: هر «🎁» تازه باید کارت کاملش برای هر دو ادمین برود —
+// نام، آیدی تلگرام، نام کاربری حساب، رمز (فقط همین‌جا) و کد لایسنس.
+const t27aName = env.DB.prepare('SELECT username FROM accounts WHERE telegram_user_id = 8101').first().username;
+const t27aCards = sentTo(111).filter((c) => (c.body.text || '').includes('تست ۱ روزه گرفته شد'));
+ok(t27aCards.length >= 1, 'کارت «تست ۱ روزه گرفته شد» به ادمین 111 رفت');
+ok(t27aCards.some((c) => (c.body.text || '').includes(t27aName)), `نام کاربری حساب (${t27aName}) در کارت هست`);
+ok(t27aCards.some((c) => (c.body.text || '').includes('رمز عبور')), 'رمز عبور (فقط همین‌جا) در کارت هست');
+ok(t27aCards.some((c) => (c.body.text || '').includes('لایسنس برنامه')), 'کد لایسنس در کارت هست');
+ok(t27aCards.some((c) => (c.body.text || '').includes('id=8101')), 'شناسهٔ تلگرامِ ثبت‌نام‌کننده (8101) در کارت هست');
+ok(t27aCards.some((c) => (c.body.text || '').includes('زمان ثبت')), 'زمان ثبت (جلالی) در کارت هست');
+ok(sentTo(222).some((c) => (c.body.text || '').includes('تست ۱ روزه گرفته شد') && (c.body.text || '').includes(t27aName)), 'ادمین دوم (222) هم همان کارت را گرفت');
+
+// (ب) خرید/ثبت‌نام پولی تأییدشده: ادمین-خریدار 111 (حساب از قبل نداشت → مسیر
+// حساب تازه با رمز) — کارت کامل + نام تأییدکننده برای هر دو ادمین.
+ok(await drive(cb(111, 'plan:m1')) === 200, 'ادمین-خریدار 111 پلن m1 زد');
+const nCopy27 = count('copyMessage');
+ok(await drive(photoMsg(111)) === 200, 'رسید فرستاد');
+ok(count('copyMessage') > nCopy27, 'رسید به ادمین‌ها رسید');
+const okBtn27 = sentTo(222).map((c) => JSON.stringify(c.body.reply_markup || {})).reverse().find((s) => s.includes('ok:111:m1:'));
+const okData27 = (okBtn27 || '').match(/ok:\d+:\w+:\d+/)?.[0];
+ok(!!okData27, 'دکمهٔ ✅ برای رسید تازه آمد');
+ok(await drive(cb(222, okData27)) === 200, 'ادمین 222 ✅ زد');
+const t27b = sentTo(222).filter((c) => (c.body.text || '').includes('خرید تأیید شد')).at(-1)?.body?.text || '';
+ok(t27b.length > 0, 'کارت «خرید تأیید شد» به ادمین رفت');
+ok(t27b.includes('id=111'), 'شناسهٔ خریدار (111) در کارت هست');
+ok(t27b.includes('رمز عبور'), 'رمزِ حسابِ تازه در کارت هست');
+ok(t27b.includes('لایسنس برنامه'), 'کد لایسنس صادرشده در کارت هست');
+ok(t27b.includes('تأییدکننده: <code>222</code>'), 'تأییدکننده (222) در کارت ثبت شد');
+ok(sentTo(111).some((c) => (c.body.text || '').includes('خرید تأیید شد')), 'ادمین دیگر هم کارت را گرفت');
+
 console.log(`\n═══ نتیجه: ${pass} پاس ✅ — ${fail} شکست ❌ ═══`);
 process.exitCode = fail ? 1 : 0;
